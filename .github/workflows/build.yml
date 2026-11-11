@@ -1,10 +1,10 @@
 name: build-installers
 
-# 产出本地打不了的两种安装包：
-#   Windows NSIS 安装包（本地 Linux 需 wine；CI 的 Windows runner 原生支持，含 exe 图标）
-#   macOS dmg（dmg 制作依赖 macOS 工具链，只能在 mac runner 上出）
-# 用法：把本仓库推到 GitHub 后，Actions 页手动 Run workflow，或推 v* 标签自动触发；
-#       产物在 run 的 Artifacts 里。
+# 全平台安装包 CI：推送到 main / 打 v* 标签 / 手动触发
+#   windows-latest → NSIS 安装包（原生构建，exe 图标完整）
+#   macos-latest   → dmg ×2（x64 + arm64）
+#   ubuntu-latest  → deb + 免安装 tar.gz（复用 build-deb.sh）
+# 产物在该次 run 的 Artifacts 区下载。
 
 on:
   workflow_dispatch:
@@ -18,9 +18,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            args: "--win nsis"
+            cmd: "npx electron-builder --win nsis"
+            paths: "dist/electron-builder/*.exe"
           - os: macos-latest
-            args: "--mac dmg --x64 --arm64"
+            cmd: "npx electron-builder --mac dmg --x64 --arm64"
+            paths: "dist/electron-builder/*.dmg"
+          - os: ubuntu-latest
+            cmd: "./build-deb.sh"
+            paths: |
+              dist/sapper-ui_*.deb
+              dist/sapper-ui-*.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,13 +35,11 @@ jobs:
         with:
           node-version: 20
       - run: npm install
-      - run: npx electron-builder ${{ matrix.args }}
+      - run: ${{ matrix.cmd }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
-          path: |
-            dist/electron-builder/*.exe
-            dist/electron-builder/*.dmg
+          path: ${{ matrix.paths }}
           if-no-files-found: error
