@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>sapper-ui 控制台</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e;
+          --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; }
+  * { box-sizing:border-box; }
+  /* ---- 滚动条：细、圆角、悬停高亮 ---- */
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:#2d333b; border-radius:8px;
+    border:2px solid transparent; background-clip:padding-box; min-height:36px; }
+  ::-webkit-scrollbar-thumb:hover { background:#4a525c;
+    border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:active { background:var(--accent);
+    border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-corner { background:transparent; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         display:flex; flex-direction:column; overflow:hidden;
+         font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  header { flex:0 0 auto; padding:10px 18px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:12px; }
+  header h1 { font-size:16px; margin:0; color:var(--accent); }
+  header .lic { margin-left:auto; color:var(--dim); font-size:12px; }
+  main { flex:1; min-height:0; overflow:hidden; display:grid;
+         grid-template-columns:440px 1fr; gap:14px; padding:14px 18px; }
+  /* ---- 左：表单 ---- */
+  #form-panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+                padding:14px; overflow-y:auto; min-height:0; }
+  label { display:block; margin:10px 0 4px; color:var(--dim); font-size:12px; }
+  input[type=text], input[type=number], textarea {
+    width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:7px 9px; font:inherit; }
+  textarea { resize:vertical; min-height:60px; }
+  textarea#desc { min-height:130px; font-family:Consolas,monospace; font-size:13px; }
+  .row { display:flex; gap:8px; }
+  .row > div { flex:1; }
+  button { background:#21262d; color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:7px 14px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:#1f6feb; border-color:#1f6feb; font-weight:600; }
+  button.danger  { border-color:var(--red); color:var(--red); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .chk { display:flex; align-items:center; gap:6px; margin-top:10px; font-size:13px; }
+  .chk input { accent-color:var(--accent); }
+  #create-msg { margin-top:10px; white-space:pre-wrap; font-size:12px; color:var(--dim);
+                max-height:150px; overflow-y:auto; }
+  /* ---- 右：任务与输出 ---- */
+  #work-panel { display:flex; flex-direction:column; gap:12px; min-width:0;
+                min-height:0; overflow:hidden; }
+  #task-bar { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+              padding:10px 14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #task-sel { background:#0d1117; color:var(--fg); border:1px solid var(--line);
+              border-radius:6px; padding:6px 9px; font:inherit; min-width:180px; }
+  #badge { font-size:12px; padding:2px 10px; border-radius:10px; border:1px solid var(--line); color:var(--dim); }
+  #badge.run { color:var(--green); border-color:var(--green); }
+  #badge.stop { color:var(--dim); }
+  #tabs { display:flex; gap:6px; }
+  #tabs button.active { border-color:var(--accent); color:var(--accent); }
+  #log { flex:1; min-height:0; background:#0a0d12; border:1px solid var(--line); border-radius:8px;
+         padding:12px 14px; overflow-y:auto; white-space:pre-wrap; word-break:break-all;
+         font:12.5px/1.55 Consolas,"Courier New",monospace; color:#c9d1d9; }
+  #graph-panel { flex:1; display:none; flex-direction:column; gap:8px; min-height:0; }
+  #graph-frame { flex:1; width:100%; border:1px solid var(--line); border-radius:8px;
+                 background:#fff; }
+  #status-pre { flex:1; min-height:0; background:#0a0d12; border:1px solid var(--line); border-radius:8px;
+         padding:12px 14px; overflow:auto; white-space:pre-wrap;
+         font:12.5px/1.55 Consolas,monospace; color:#c9d1d9; display:none; }
+  #create-msg.err { color:var(--red); }
+  /* ---- Flag 结果 ---- */
+  #flag-banner { display:none; background:linear-gradient(90deg,#12261e,#0f2c1f);
+                 border:1px solid var(--green); border-radius:8px; padding:9px 14px;
+                 align-items:center; gap:10px; flex-wrap:wrap; }
+  #flag-banner .fb-title { color:var(--green); font-weight:700; white-space:nowrap; }
+  #flag-banner code { color:var(--green); font:13px Consolas,monospace; word-break:break-all; }
+  #flag-panel { flex:1; display:none; flex-direction:column; gap:10px; overflow-y:auto; min-height:0; }
+  #flag-list { display:flex; flex-direction:column; gap:10px; }
+  .flag-card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .flag-card .fv { font:14px/1.5 Consolas,monospace; color:var(--green); word-break:break-all; }
+  .flag-meta { color:var(--dim); font-size:12px; margin-top:8px; display:flex; gap:10px;
+               align-items:center; flex-wrap:wrap; }
+  .st { font-size:11px; padding:1px 8px; border-radius:9px; border:1px solid; }
+  .st.recorded { color:var(--yellow); border-color:var(--yellow); }
+  .st.submitted { color:var(--green); border-color:var(--green); }
+  .st.rejected { color:var(--red); border-color:var(--red); }
+  .copy-btn { padding:2px 10px; font-size:12px; }
+  /* ---- 附件与设置 ---- */
+  input[type=file] { width:100%; color:var(--dim); font-size:12px; }
+  input[type=file]::file-selector-button { background:#21262d; color:var(--fg);
+    border:1px solid var(--line); border-radius:6px; padding:5px 12px; font:inherit;
+    cursor:pointer; margin-right:10px; }
+  input[type=file]::file-selector-button:hover { border-color:var(--accent); }
+  #file-list { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+  .file-chip { display:flex; align-items:center; gap:8px; background:#0d1117;
+    border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12px; }
+  .file-chip .fn { word-break:break-all; }
+  .file-chip .fs { color:var(--dim); white-space:nowrap; }
+  .file-chip button { margin-left:auto; padding:0 8px; font-size:12px;
+    border-color:var(--red); color:var(--red); }
+  details#cfg-box { margin-top:14px; border-top:1px solid var(--line); padding-top:10px; }
+  details#cfg-box summary { cursor:pointer; color:var(--dim); font-size:12px; }
+  select#cfg-engine { width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--line);
+                      border-radius:6px; padding:7px 9px; font:inherit; }
+  #cfg-info { margin-top:8px; font-size:12px; color:var(--dim); }
+  #cfg-info.err { color:var(--red); }
+  /* ---- 配置分组卡片 ---- */
+  .cfg-group { margin-top:10px; background:#0d1117; border:1px solid var(--line);
+               border-radius:6px; padding:8px 10px; }
+  .cfg-title { color:var(--accent); font-size:12px; margin-bottom:6px; font-weight:600; }
+  .cfg-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .cfg-table td { padding:2px 6px 2px 0; vertical-align:top; word-break:break-all; }
+  .cfg-warn { margin-top:8px; color:var(--yellow); font-size:12px; white-space:pre-wrap; }
+  .cfg-line { margin-top:8px; color:var(--dim); font-size:12px; word-break:break-all; }
+  select#deploy-mode, #deploy-docker input[type=text] {
+    width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:7px 9px; font:inherit; }
+  #deploy-status { color:var(--dim); font-size:11px; word-break:break-all; }
+  /* ---- 编辑任务弹窗 ---- */
+  #edit-mask { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+               align-items:center; justify-content:center; z-index:50; }
+  #edit-mask.on { display:flex; }
+  #edit-box { width:min(560px,92vw); max-height:88vh; overflow-y:auto;
+              background:var(--panel); border:1px solid var(--line); border-radius:10px;
+              padding:18px 20px; }
+  #edit-box h2 { margin:0 0 8px; font-size:15px; color:var(--accent); }
+  #edit-box textarea { min-height:70px; }
+  #edit-box textarea#edit-desc { min-height:110px; font-family:Consolas,monospace; font-size:12.5px; }
+  #edit-msg { margin-top:10px; white-space:pre-wrap; font-size:12px; color:var(--dim); }
+  #edit-msg.err { color:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ sapper-ui 控制台</h1>
+  <span style="color:var(--dim);font-size:12px">表单录题 → 一键开跑 → 实时看盘</span>
+  <span class="lic">仅限授权安全测试 / CTF 使用</span>
+</header>
+<main>
+  <!-- 左：录题表单 -->
+  <div id="form-panel">
+    <label>任务名（唯一，用于目录/图谱）</label>
+    <input type="text" id="name" placeholder="例如 web1-弱口令后台">
+    <label>目标一句话（图谱的项目目标）</label>
+    <input type="text" id="goal" value="解出本题并捕获 flag">
+    <label>靶场地址（每行一个，可为空）</label>
+    <textarea id="targets" placeholder="http://10.10.10.5&#10;http://10.10.10.5:8080/api"></textarea>
+    <label>题目描述（完整粘贴，自动作为 note fact + 详细文档录入图谱）</label>
+    <textarea id="desc" placeholder="把平台上的题目描述原文粘到这里，长文也没关系…"></textarea>
+    <label>flag 格式 / 其他提示（可选，录入 hint）</label>
+    <input type="text" id="hint" placeholder="例如 flag{...}，本题共 1 个 flag">
+    <label>附件（可选，多选：pcap / 二进制 / 压缩包等）</label>
+    <input type="file" id="files" multiple>
+    <div id="file-list"></div>
+    <div class="row">
+      <div><label>时间预算（分钟）</label><input type="number" id="minutes" min="1" placeholder="留空=不限"></div>
+      <div><label>step 上限</label><input type="number" id="max_steps" min="1" placeholder="留空=不限"></div>
+    </div>
+    <div class="chk"><input type="checkbox" id="skip" checked>
+      免确认模式（--skip-permissions，无人值守必需）</div>
+    <div class="chk"><input type="checkbox" id="selftest">
+      自检模式（不调真模型，验证链路用，零 token）</div>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="primary" id="btn-create" style="flex:1">① 创建任务（录入图谱）</button>
+      <button id="btn-start" style="flex:1">② 开始测试</button>
+    </div>
+    <div id="create-msg"></div>
+    <details id="cfg-box">
+      <summary>部署 / 模型配置与引擎</summary>
+      <label>部署模式（sapper_v2 的两种安装方式）</label>
+      <select id="deploy-mode">
+        <option value="direct">direct —— 本机直装 sapper CLI</option>
+        <option value="docker">docker —— 容器伴生（任务目录挂载进容器）</option>
+      </select>
+      <div id="deploy-docker" style="display:none">
+        <div class="row">
+          <div style="flex:2"><label>镜像</label>
+            <input type="text" id="deploy-image" placeholder="sapper-agent:tmux"></div>
+          <div style="flex:1"><label>网络</label>
+            <input type="text" id="deploy-network" placeholder="host / bridge"></div>
+        </div>
+        <div id="deploy-status" style="margin-top:6px"></div>
+      </div>
+      <div style="margin-top:8px"><button id="deploy-save">保存部署设置</button></div>
+      <label style="margin-top:14px">Agent 引擎（切换立即生效，作用于之后启动的任务）</label>
+      <select id="cfg-engine">
+        <option value="default">跟随配置文件（env 中的 SAPPER_BIN）</option>
+        <option value="agent">sapper-agent（内置 Python 引擎，直连 DeepSeek）</option>
+        <option value="claude">claude CLI（Anthropic 兼容接口）</option>
+      </select>
+      <div id="cfg-engine-hint" style="margin-top:4px;font-size:11px;color:var(--yellow)"></div>
+      <label>env 文件路径（留空=不加载文件，沿用启动时的环境变量）</label>
+      <div class="row" style="align-items:center">
+        <input type="text" id="cfg-path" placeholder="/path/to/sapper.env" style="flex:1">
+        <button id="cfg-pick" style="white-space:nowrap">选择文件…</button>
+      </div>
+      <div style="margin-top:8px"><button id="cfg-apply">加载配置</button></div>
+      <div id="cfg-hint" style="margin-top:6px;font-size:11px;color:var(--dim)">
+        选择文件后立即生效；手动输入需点「加载配置」。只影响之后启动的任务。</div>
+      <div id="cfg-info"></div>
+    </details>
+  </div>
+
+  <!-- 右：任务运行区 -->
+  <div id="work-panel">
+    <div id="task-bar">
+      <span style="color:var(--dim);font-size:12px">任务</span>
+      <select id="task-sel"><option value="">— 未选择 —</option></select>
+      <span id="badge" class="stop">未运行</span>
+      <button id="btn-edit" disabled title="编辑任务配置：目标、靶标、描述、提示、运行限制">编辑</button>
+      <button id="btn-run" class="primary" disabled
+              title="开始或继续当前任务；运行中点击则停止">▶ 开始/继续</button>
+      <div id="tabs" style="margin-left:auto">
+        <button id="tab-log" class="active">日志</button>
+        <button id="tab-status">看板</button>
+        <button id="tab-flags">Flag</button>
+        <button id="tab-graph">图谱</button>
+      </div>
+    </div>
+    <div id="flag-banner">
+      <span class="fb-title">🏁 已捕获 <span id="fb-count">0</span> 个 flag</span>
+      <code id="fb-value"></code>
+      <button id="fb-copy" class="copy-btn" style="margin-left:auto">复制</button>
+      <button id="fb-goto" class="copy-btn">查看全部</button>
+    </div>
+    <div id="log" class="pane">选择或创建任务后，「开始测试」的实时输出会滚动显示在这里。</div>
+    <pre id="status-pre" class="pane"></pre>
+    <div id="flag-panel" class="pane"><div id="flag-list"></div></div>
+    <div id="graph-panel" class="pane">
+      <iframe id="graph-frame" title="图谱"></iframe>
+    </div>
+  </div>
+</main>
+
+<div id="edit-mask">
+  <div id="edit-box">
+    <h2>编辑任务 <span id="edit-name"></span></h2>
+    <label>目标一句话</label>
+    <input type="text" id="edit-goal">
+    <div class="row">
+      <div><label>时间预算（分钟）</label>
+        <input type="number" id="edit-minutes" min="1" placeholder="留空=不限"></div>
+      <div><label>step 上限</label>
+        <input type="number" id="edit-maxsteps" min="1" placeholder="留空=不限"></div>
+    </div>
+    <label>靶场地址（每行一个；新增的会登记为 host fact，已有事实不会删除）</label>
+    <textarea id="edit-targets" placeholder="http://10.10.10.5"></textarea>
+    <label>题目描述（修改后作为新 note fact 追加记录）</label>
+    <textarea id="edit-desc" placeholder="题目描述原文…"></textarea>
+    <label>追加提示（可选，新增 hint）</label>
+    <input type="text" id="edit-hint" placeholder="例如 flag 格式、补充线索">
+    <div id="edit-msg"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="primary" id="edit-save" style="flex:1">保存</button>
+      <button id="edit-cancel" style="flex:0 0 100px">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cur = "", timer = null, tab = "log", running = false, runTimer = null;
+
+function badge(run){ $("badge").textContent = run ? "● 运行中" : "未运行";
+                    $("badge").className = run ? "run" : "stop"; }
+
+async function api(path, body){
+  // 永不抛异常：失败统一转成 {error}，调用方按 d.error 分支即可
+  const opt = body ? {method:"POST",headers:{"Content-Type":"application/json"},
+                      body:JSON.stringify(body)} : {};
+  try {
+    const r = await fetch(path, opt);
+    const d = await r.json();
+    if (!r.ok && !d.error) d.error = `HTTP ${r.status}`;
+    return d;
+  } catch(e){
+    return {error: "无法连接后端（" + ((e && e.message) || e) + "）"};
+  }
+}
+
+async function refreshTasks(keep){
+  const d = await api("/api/tasks");
+  if (d.error || !d.tasks) return;  // 后端不可达时保持现有列表
+  const sel = $("task-sel");
+  sel.innerHTML = '<option value="">— 未选择 —</option>';
+  for (const t of d.tasks){
+    const o = document.createElement("option");
+    o.value = t.name; o.textContent = t.name + (t.running ? "（运行中）" : "");
+    sel.appendChild(o);
+  }
+  if (keep){ sel.value = keep; if (sel.value !== keep) sel.value = ""; }
+  onTaskChange();
+}
+
+function showTab(which){
+  tab = which;
+  for (const [id, on] of [["log",which==="log"],["status-pre",which==="status"],
+                          ["flag-panel",which==="flags"],["graph-panel",which==="graph"]])
+    $(id).style.display = on ? (id==="log"||id==="status-pre" ? "block" : "flex") : "none";
+  for (const b of $("tabs").querySelectorAll("button")) b.classList.remove("active");
+  $({log:"tab-log",status:"tab-status",flags:"tab-flags",graph:"tab-graph"}[which]).classList.add("active");
+  if (which==="log") pollLog();
+  if (which==="status") loadStatus();
+  if (which==="flags") pollFlags();
+  if (which==="graph") $("graph-frame").src = "/view/" + encodeURIComponent(cur) + "?t=" + Date.now();
+}
+
+async function pollLog(){
+  if (!cur) return;
+  const d = await api("/api/log/" + encodeURIComponent(cur));
+  if (d.error){ clearTimeout(timer); timer = setTimeout(pollLog, 1500); return; }
+  badge(d.running);
+  const el = $("log");
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.textContent = d.log || "（暂无输出）";
+  if (stick) el.scrollTop = el.scrollHeight;
+  clearTimeout(timer);
+  timer = setTimeout(pollLog, 1500);
+}
+
+async function loadStatus(){
+  if (!cur) return;
+  const d = await api("/api/status/" + encodeURIComponent(cur));
+  if (d.error){ $("status-pre").textContent = d.error; return; }
+  let facts = "";
+  try {
+    const g = d.graph;
+    const F = (g && (g.facts || [])) || [], I = (g && (g.intents || [])) || [];
+    facts = `── 看板摘要 ──\nfacts: ${F.length}   intents: ${I.length}\n\n`;
+    facts += "【情报 facts】\n" + F.slice(-25).map(f =>
+      `${f.id||"?"} [${f.kind||"note"}] ${(f.title||f.description||"").slice(0,80)}`).join("\n");
+    facts += "\n\n【任务 intents】\n" + I.slice(-25).map(i =>
+      `${i.id||"?"} [${i.status||"open"}] ${(i.title||i.description||"").slice(0,80)}`).join("\n");
+  } catch(e){ facts = d.graph_raw || ""; }
+  if (d.attachments && d.attachments.length)
+    facts += "\n【附件】\n" + d.attachments.map(a => `${a.name}（${fmtSize(a.size)}）`).join("\n") + "\n";
+  $("status-pre").textContent = facts + "\n\n── sapper status 原始输出 ──\n" + (d.status || "");
+}
+
+$("task-sel").onchange = onTaskChange;
+function onTaskChange(){
+  cur = $("task-sel").value;
+  clearTimeout(timer); clearTimeout(flagTimer); clearTimeout(runTimer);
+  if (!cur){ running = false; badge(false); updateRunControls();
+             $("log").textContent = "选择或创建任务…";
+             $("flag-banner").style.display = "none"; renderFlags([]); return; }
+  pollRun();
+  if (tab==="log") pollLog();
+  pollFlags();
+}
+
+function updateRunControls(){
+  const has = !!cur;
+  $("btn-run").disabled = !has;
+  $("btn-edit").disabled = !has || running;
+  $("btn-start").disabled = !has || running;
+  const b = $("btn-run");
+  b.textContent = running ? "■ 停止" : "▶ 开始/继续";
+  b.className = running ? "danger" : "primary";
+}
+
+async function pollRun(){
+  clearTimeout(runTimer);
+  if (!cur){ running = false; updateRunControls(); return; }
+  try {
+    const d = await api("/api/running/" + encodeURIComponent(cur));
+    if (d.error){ /* 后端短暂不可达时保持上一次状态 */ }
+    else {
+      running = !!d.running;
+      if (d.container){  // docker 模式：区分「容器在跑」与「auto 在跑」
+        $("badge").textContent = running ? "● 运行中"
+          : (d.container === "running" ? "○ 容器待命" : "未运行");
+        $("badge").className = running ? "run" : "stop";
+      } else badge(running);
+    }
+  } catch(e){ /* 不可能到达：api() 已兜底 */ }
+  updateRunControls();
+  runTimer = setTimeout(pollRun, 2000);
+}
+
+/* ---- Flag 结果 ---- */
+let flagTimer = null, lastFlags = [];
+const ST_TEXT = {recorded:"已记录", submitted:"已提交 ✓", rejected:"提交被拒"};
+
+async function pollFlags(){
+  clearTimeout(flagTimer);
+  if (!cur) return;
+  try {
+    const d = await api("/api/flags/" + encodeURIComponent(cur));
+    if (!d.error) renderFlags(d.flags || []);
+  } catch(e){ /* 后端暂不可达时静默重试 */ }
+  flagTimer = setTimeout(pollFlags, 3000);
+}
+
+function renderFlags(flags){
+  lastFlags = flags;
+  const banner = $("flag-banner");
+  if (flags.length){
+    banner.style.display = "flex";
+    $("fb-count").textContent = flags.length;
+    $("fb-value").textContent = flags[flags.length-1].value;
+  } else {
+    banner.style.display = "none";
+  }
+  const list = $("flag-list");
+  list.innerHTML = "";
+  if (!flags.length){
+    const tip = document.createElement("div");
+    tip.style.color = "var(--dim)";
+    tip.textContent = "还没有捕获到 flag。开始测试后，sapper 记录的 flag 会自动出现在这里（每 3 秒刷新）。";
+    list.appendChild(tip);
+    return;
+  }
+  for (const f of flags.slice().reverse()){
+    const card = document.createElement("div"); card.className = "flag-card";
+    const val = document.createElement("div"); val.className = "fv"; val.textContent = f.value;
+    const meta = document.createElement("div"); meta.className = "flag-meta";
+    const st = document.createElement("span");
+    st.className = "st " + (f.status || "recorded");
+    st.textContent = ST_TEXT[f.status] || f.status || "已记录";
+    meta.appendChild(st);
+    const idsp = document.createElement("span"); idsp.textContent = f.id; meta.appendChild(idsp);
+    if (f.challenge){
+      const c = document.createElement("span"); c.textContent = "challenge: " + f.challenge;
+      meta.appendChild(c);
+    }
+    if (f.created_at){
+      const t = document.createElement("span");
+      t.textContent = f.created_at.replace("T"," ").replace("Z"," UTC");
+      meta.appendChild(t);
+    }
+    const cp = document.createElement("button");
+    cp.textContent = "复制"; cp.className = "copy-btn"; cp.style.marginLeft = "auto";
+    cp.onclick = () => copyText(f.value, cp);
+    meta.appendChild(cp);
+    card.appendChild(val); card.appendChild(meta);
+    list.appendChild(card);
+  }
+}
+
+async function copyText(text, btn){
+  try { await navigator.clipboard.writeText(text); }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  if (btn){ const old = btn.textContent; btn.textContent = "已复制 ✓";
+            setTimeout(() => btn.textContent = old, 1200); }
+}
+
+$("fb-copy").onclick = () => { if (lastFlags.length) copyText(lastFlags[lastFlags.length-1].value, $("fb-copy")); };
+$("fb-goto").onclick = () => showTab("flags");
+
+$("btn-create").onclick = async () => {
+  const msg = $("create-msg"); msg.className=""; msg.textContent = "创建中…";
+  const created = $("name").value.trim();
+  const d = await api("/api/create", {
+    name: created, goal: $("goal").value.trim(),
+    targets: $("targets").value, desc: $("desc").value, hint: $("hint").value.trim(),
+    minutes: $("minutes").value, max_steps: $("max_steps").value,
+  });
+  if (d.error){ msg.className="err"; msg.textContent = "✗ " + d.error + "\n" + (d.log||""); return; }
+  let upMsg = "";
+  for (let i=0;i<pickedFiles.length;i++){
+    const f = pickedFiles[i];
+    msg.textContent = `✓ 任务已创建。上传附件 ${i+1}/${pickedFiles.length}: ${f.name} …`;
+    try {
+      const r = await fetch("/api/upload?task=" + encodeURIComponent(created) +
+                            "&filename=" + encodeURIComponent(f.name),
+                            {method:"POST", body:f});
+      const ud = await r.json();
+      upMsg += ud.error ? `\n✗ 附件 ${f.name}: ${ud.error}`
+                        : `\n✓ 附件 ${ud.name}（${fmtSize(ud.size)}）已登记图谱`;
+    } catch(e){ upMsg += `\n✗ 附件 ${f.name} 上传失败: ${e}`; }
+  }
+  msg.className = upMsg.includes("✗") ? "err" : "";
+  msg.textContent = "✓ 创建成功，图谱已录入。" + upMsg + "\n" + (d.log||"");
+  pickedFiles = []; renderFileList();
+  $("name").value = ""; $("desc").value = ""; $("targets").value = ""; $("hint").value = "";
+  await refreshTasks(created);
+};
+
+/* ---- 附件选择 ---- */
+let pickedFiles = [];
+function fmtSize(n){
+  if (n >= 1<<30) return (n/(1<<30)).toFixed(1)+" GB";
+  if (n >= 1<<20) return (n/(1<<20)).toFixed(1)+" MB";
+  if (n >= 1<<10) return (n/(1<<10)).toFixed(1)+" KB";
+  return n+" B";
+}
+function renderFileList(){
+  const list = $("file-list"); list.innerHTML = "";
+  pickedFiles.forEach((f, idx) => {
+    const chip = document.createElement("div"); chip.className = "file-chip";
+    const fn = document.createElement("span"); fn.className = "fn"; fn.textContent = f.name;
+    const fs = document.createElement("span"); fs.className = "fs"; fs.textContent = fmtSize(f.size);
+    const rm = document.createElement("button"); rm.textContent = "×";
+    rm.onclick = () => { pickedFiles.splice(idx,1); renderFileList(); };
+    chip.append(fn, fs, rm); list.appendChild(chip);
+  });
+}
+$("files").onchange = () => {
+  for (const f of Array.from($("files").files))
+    if (!pickedFiles.some(p => p.name===f.name && p.size===f.size)) pickedFiles.push(f);
+  $("files").value = "";
+  renderFileList();
+};
+
+/* ---- 部署模式（direct / docker） ---- */
+let deployState = null;
+
+async function loadDeploy(){
+  const d = await api("/api/deploy");
+  if (d.error) return;
+  deployState = d;
+  $("deploy-mode").value = d.mode;
+  $("deploy-image").value = d.image || "";
+  $("deploy-network").value = d.network || "";
+  renderDeploy();
+}
+
+function renderDeploy(){
+  const d = deployState; if (!d) return;
+  const isDocker = d.mode === "docker";
+  $("deploy-docker").style.display = isDocker ? "block" : "none";
+  $("cfg-engine").disabled = isDocker;
+  $("cfg-engine-hint").textContent = isDocker
+    ? "docker 模式：引擎为容器内置 claude CLI，宿主机引擎切换不生效" : "";
+  const st = $("deploy-status");
+  if (!isDocker){ st.textContent = ""; return; }
+  const dockerTxt = d.docker_ok ? "Docker 可用" : "Docker 不可用（未安装或守护进程未启动）";
+  const imgTxt = d.image_ok ? "镜像存在" : "镜像不存在（需 docker build 或 load）";
+  const bad = !d.docker_ok || (d.image_ok === false);
+  st.textContent = `${dockerTxt}；镜像 ${d.image}：${imgTxt}`;
+  st.style.color = bad ? "var(--red)" : "var(--dim)";
+}
+
+$("deploy-mode").onchange = () => {
+  if (deployState){ deployState.mode = $("deploy-mode").value; renderDeploy(); }
+};
+
+$("deploy-save").onclick = async () => {
+  const st = $("deploy-status");
+  const body = { mode: $("deploy-mode").value };
+  const img = $("deploy-image").value.trim();
+  const net = $("deploy-network").value.trim();
+  if (img) body.image = img;
+  if (net) body.network = net;
+  const d = await api("/api/deploy", body);
+  if (d.error){ st.style.color = "var(--red)"; st.textContent = "✗ " + d.error; return; }
+  deployState = d; renderDeploy(); loadConfig();
+};
+
+/* ---- 模型配置与引擎 ---- */
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function cfgGroup(title, items){
+  if (!items || !items.length) return "";
+  const rows = items.map(it =>
+    `<tr><td style="color:var(--dim);white-space:nowrap">${esc(it.key)}</td>` +
+    `<td>${esc(it.value || "（未设置）")}${it.secret ? " 🔒" : ""}</td></tr>`).join("");
+  return `<div class="cfg-group"><div class="cfg-title">${esc(title)}</div>` +
+         `<table class="cfg-table">${rows}</table></div>`;
+}
+function renderCfg(d){
+  const el = $("cfg-info"); el.className = "";
+  let html = "";
+  if (d.diagnostics && d.diagnostics.length)
+    html += `<div class="cfg-warn">⚠ ${d.diagnostics.map(esc).join("<br>⚠ ")}</div>`;
+  html += `<div class="cfg-line">sapper: ${esc(d.sapper_version || "未知")}`
+        + `　命令: ${esc(d.sapper_cmd || "sapper")}</div>`;
+  const engName = (d.engines && d.engines[d.engine]) || d.engine || "default";
+  html += `<div class="cfg-line">Agent 引擎: ${esc(engName)}`
+        + (d.engine_bin ? `（启动时注入 SAPPER_BIN: ${esc(d.engine_bin)}）` : "") + `</div>`;
+  html += cfgGroup("模型与引擎", d.groups && d.groups.model);
+  html += cfgGroup("超时与限额", d.groups && d.groups.limits);
+  if (d.pool && d.pool.length){
+    const rows = d.pool.map(p =>
+      `<tr><td>${esc(p.base_url || "")}</td><td>${esc(p.model || "")}</td>` +
+      `<td>${esc(p.token || esc(p.error || ""))}</td></tr>`).join("");
+    html += `<div class="cfg-group"><div class="cfg-title">密钥池 SAPPER_KEY_POOL（token 已打码 🔒）</div>` +
+            `<table class="cfg-table">${rows}</table></div>`;
+  }
+  if (d.env_file_pairs && d.env_file_pairs.length)
+    html += cfgGroup("env 文件: " + (d.env_file || ""), d.env_file_pairs);
+  el.innerHTML = html;
+}
+async function loadConfig(){
+  const d = await api("/api/config");
+  if (d.error) return;
+  $("cfg-path").value = d.env_file || "";
+  if (d.engine) $("cfg-engine").value = d.engine;
+  renderCfg(d);
+}
+$("cfg-engine").onchange = async () => {
+  const el = $("cfg-info");
+  const d = await api("/api/config", {engine: $("cfg-engine").value});
+  if (d.error){ el.className = "err"; el.textContent = "✗ " + d.error; await loadConfig(); return; }
+  renderCfg(d);
+};
+$("cfg-apply").onclick = async () => { await applyConfig(); };
+async function applyConfig(){
+  const el = $("cfg-info");
+  const d = await api("/api/config", {
+    env_file: $("cfg-path").value.trim(),
+    engine: $("cfg-engine").value,
+  });
+  if (d.error){ el.className = "err"; el.textContent = "✗ " + d.error; return; }
+  $("cfg-path").value = d.env_file || "";
+  if (d.engine) $("cfg-engine").value = d.engine;
+  renderCfg(d);
+}
+if (window.sapperUI && typeof window.sapperUI.pickEnvFile === "function"){
+  $("cfg-pick").onclick = async () => {
+    const p = await window.sapperUI.pickEnvFile();
+    if (!p) return;
+    $("cfg-path").value = p;
+    await applyConfig();
+  };
+} else {
+  $("cfg-pick").style.display = "none";
+  $("cfg-hint").textContent = "浏览器模式请手动输入路径后点「加载配置」。只影响之后启动的任务。";
+}
+loadConfig();
+loadDeploy();
+
+async function startTask(){
+  const msg = $("create-msg"); msg.className = "";
+  if (!cur){ msg.textContent = "先选择任务"; return; }
+  // 时间/step 上限来自任务配置（编辑弹窗里修改），留空即不限；
+  // 自检引擎由服务端按平台给默认值（前端不再写死 /bin/true）
+  const d = await api("/api/start", {
+    name: cur,
+    skip_permissions: $("skip").checked,
+    selftest: $("selftest").checked,
+  });
+  if (d.error){ msg.className="err"; msg.textContent = "✗ " + d.error; return; }
+  msg.textContent = d.released && d.released.length
+    ? "已自动释放残留 claim: " + d.released.join("、") : "";
+  showTab("log");
+  badge(true); running = true; updateRunControls(); pollLog(); pollRun();
+}
+async function stopTask(){
+  if (!cur) return;
+  await api("/api/stop", {name: cur});
+  setTimeout(pollRun, 600);
+}
+$("btn-start").onclick = startTask;
+$("btn-run").onclick = () => running ? stopTask() : startTask();
+
+/* ---- 编辑任务 ---- */
+async function openEdit(){
+  if (!cur) return;
+  const d = await api("/api/task/" + encodeURIComponent(cur));
+  if (d.error){ $("create-msg").className = "err"; $("create-msg").textContent = "✗ " + d.error; return; }
+  $("edit-name").textContent = d.name;
+  $("edit-goal").value = d.goal || "";
+  $("edit-minutes").value = d.minutes || "";
+  $("edit-maxsteps").value = d.max_steps || "";
+  $("edit-targets").value = (d.targets || []).join("\n");
+  $("edit-desc").value = d.desc || "";
+  $("edit-hint").value = "";
+  $("edit-msg").className = ""; $("edit-msg").textContent = "";
+  $("edit-mask").classList.add("on");
+  $("edit-goal").focus();
+}
+function closeEdit(){ $("edit-mask").classList.remove("on"); }
+$("btn-edit").onclick = openEdit;
+$("edit-cancel").onclick = closeEdit;
+$("edit-mask").onclick = e => { if (e.target === $("edit-mask")) closeEdit(); };
+$("edit-save").onclick = async () => {
+  const msg = $("edit-msg"); msg.className = ""; msg.textContent = "保存中…";
+  const d = await api("/api/edit", {
+    name: cur,
+    goal: $("edit-goal").value,
+    targets: $("edit-targets").value,
+    desc: $("edit-desc").value,
+    hint: $("edit-hint").value,
+    minutes: $("edit-minutes").value,
+    max_steps: $("edit-maxsteps").value,
+  });
+  if (d.error){ msg.className = "err"; msg.textContent = "✗ " + d.error; return; }
+  msg.textContent = "✓ " + ((d.messages && d.messages.length) ? d.messages.join("；") : "已保存");
+  $("edit-hint").value = "";
+  if (tab === "status") loadStatus();
+  pollRun();
+};
+
+$("tab-log").onclick = () => showTab("log");
+$("tab-status").onclick = () => showTab("status");
+$("tab-flags").onclick = () => showTab("flags");
+$("tab-graph").onclick = () => showTab("graph");
+
+refreshTasks();
+pollLog();
+</script>
+</body>
+</html>

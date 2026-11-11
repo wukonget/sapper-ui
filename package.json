@@ -1,0 +1,46 @@
+{
+  "name": "sapper-ui",
+  "version": "1.0.0",
+  "description": "Sapper CTF 桌面控制台：录题 → 一键开跑 → 状态/Flag 看板",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:dir": "electron-builder --dir"
+  },
+  "license": "MIT",
+  "author": { "name": "sapper-ui" },
+  "devDependencies": {
+    "electron": "33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "org.sapper.ui",
+    "productName": "Sapper Console",
+    "directories": { "output": "dist/electron-builder" },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/icon.png"
+    ],
+    "extraResources": [
+      { "from": "server.py", "to": "server.py" },
+      { "from": "index.html", "to": "index.html" }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.developer-tools"
+    }
+  }
+}

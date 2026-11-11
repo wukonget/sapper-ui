@@ -1,0 +1,40 @@
+name: build-installers
+
+# 产出本地打不了的两种安装包：
+#   Windows NSIS 安装包（本地 Linux 需 wine；CI 的 Windows runner 原生支持，含 exe 图标）
+#   macOS dmg（dmg 制作依赖 macOS 工具链，只能在 mac runner 上出）
+# 用法：把本仓库推到 GitHub 后，Actions 页手动 Run workflow，或推 v* 标签自动触发；
+#       产物在 run 的 Artifacts 里。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            args: "--win nsis"
+          - os: macos-latest
+            args: "--mac dmg --x64 --arm64"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npx electron-builder ${{ matrix.args }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            dist/electron-builder/*.exe
+            dist/electron-builder/*.dmg
+          if-no-files-found: error
