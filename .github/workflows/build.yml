@@ -18,10 +18,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            cmd: "npx electron-builder --win nsis"
+            cmd: "npx electron-builder --win nsis --publish never"
             paths: "dist/electron-builder/*.exe"
           - os: macos-latest
-            cmd: "npx electron-builder --mac dmg --x64 --arm64"
+            cmd: "npx electron-builder --mac dmg --x64 --arm64 --publish never"
             paths: "dist/electron-builder/*.dmg"
           - os: ubuntu-latest
             cmd: "./build-deb.sh"
@@ -35,9 +35,9 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      # --publish never：发布统一由 release job 负责（GH_TOKEN 会让 electron-builder
+      # 在 tag 构建时自行创建 Release，而 build job 无写权限，会 403）
       - run: ${{ matrix.cmd }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
