@@ -476,6 +476,7 @@ def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None
                 entry = RUNNING.get(name)
                 if entry:
                     entry["proc"] = None  # 释放句柄；/api/* 用 None 判定为已结束
+            maybe_autoreport(name, tdir)  # 解出 flag 时自动落盘解题报告
 
     with LOCK:
         entry = RUNNING.setdefault(name, {"proc": None, "log": deque(maxlen=4000), "lock": threading.Lock()})
@@ -734,6 +735,179 @@ def _config_info() -> dict:
     }
 
 
+# ---------- 解题报告 ----------
+FLAG_STATUS_ZH = {"recorded": "已记录", "submitted": "已提交 ✓", "rejected": "提交被拒"}
+INTENT_MARK = {"done": "✅", "claimed": "🔧", "open": "☐"}
+
+
+def extract_flags(graph: dict) -> list[dict]:
+    out = []
+    for f in (graph or {}).get("facts", []):
+        if f.get("kind") != "flag":
+            continue
+        d = f.get("data") or {}
+        out.append({
+            "id": f.get("id", ""),
+            "value": d.get("value", ""),
+            "status": d.get("status", "recorded"),
+            "challenge": d.get("challenge", ""),
+            "created_at": f.get("created_at", ""),
+        })
+    return out
+
+
+def _md_esc(s: str) -> str:
+    """表格单元格转义：竖线会破坏 Markdown 表格。"""
+    return (s or "").replace("|", "\\|").replace("\r", "")
+
+
+def _fmt_time(ts: str) -> str:
+    return (ts or "").replace("T", " ").replace("Z", " UTC") or "—"
+
+
+def generate_report(tdir: Path) -> dict:
+    """汇总任务信息 + 图谱，产出 Markdown 解题报告（不落盘）。"""
+    info = task_info(tdir)
+    g = task_graph(tdir)
+    flags = extract_flags(g)
+    facts = [f for f in g.get("facts", []) if f.get("id") != "goal"]
+    facts.sort(key=lambda f: f.get("created_at") or "")
+    intents = g.get("intents", [])
+    name = tdir.name
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    L: list[str] = []
+    L.append(f"# {name} · 解题报告\n")
+    L.append(f"> 由 sapper-ui 自动生成于 {now} · "
+             f"数据来源：任务图谱（{len(facts)} facts / {len(intents)} intents）\n")
+
+    L.append("## 基本信息\n")
+    L.append("| 项目 | 内容 |")
+    L.append("|---|---|")
+    L.append(f"| 目标 | {_md_esc(info.get('goal')) or '—'} |")
+    targets = info.get("targets") or []
+    L.append(f"| 靶标 | {_md_esc('、'.join(targets)) or '—'} |")
+    L.append(f"| 模型 | {_md_esc(os.environ.get('SAPPER_MODEL') or '(未设置)')} |")
+    minutes = info.get("minutes")
+    max_steps = info.get("max_steps")
+    L.append(f"| 运行限制 | 时间 {minutes if minutes else '不限'} 分钟 / "
+             f"step {max_steps if max_steps else '不限'} |")
+    L.append("")
+
+    L.append(f"## Flag（{len(flags)}）\n")
+    if flags:
+        for f in flags:
+            st = FLAG_STATUS_ZH.get(f["status"], f["status"])
+            L.append(f"- `{_md_esc(f['value'])}` — {st}"
+                     f"（{f['id']}，{_fmt_time(f['created_at'])}）")
+    else:
+        L.append("（尚未捕获 flag）")
+    L.append("")
+
+    L.append("## 题目描述\n")
+    L.append(((info.get("desc") or "").strip() or "（未填写）") + "\n")
+
+    hints = info.get("hints") or []
+    L.append("## 提示\n")
+    for h in hints:
+        L.append(f"- {_md_esc(h)}")
+    if not hints:
+        L.append("（无）")
+    L.append("")
+
+    L.append("## 解题时间线\n")
+    if facts:
+        L.append("| # | 时间 | 类型 | 记录 |")
+        L.append("|---|---|---|---|")
+        for i, f in enumerate(facts, 1):
+            title = (f.get("title") or f.get("description") or "")[:60]
+            L.append(f"| {i} | {_fmt_time(f.get('created_at'))} | "
+                     f"{f.get('kind', 'note')} | {_md_esc(title)} |")
+        L.append("")
+        L.append("### 详细记录\n")
+        for f in facts:
+            title = f.get("title") or "(untitled)"
+            L.append(f"**[{f.get('kind', 'note')}] {_md_esc(title)}**"
+                     f"（{_fmt_time(f.get('created_at'))}）\n")
+            desc = (f.get("description") or "").strip()
+            if desc and desc != title:
+                L.append(_md_esc(desc) + "\n")
+            data = f.get("data") or {}
+            if data:
+                dims = "、".join(f"{k}={v}" for k, v in data.items())
+                L.append(f"- 维度：{_md_esc(dims)}\n")
+    else:
+        L.append("（图谱为空）\n")
+
+    L.append("## 任务 intents\n")
+    if intents:
+        for it in intents:
+            st = it.get("status", "open")
+            L.append(f"- {INTENT_MARK.get(st, '·')} **[{st}]** "
+                     f"{_md_esc(it.get('title') or '')} — "
+                     f"{_md_esc((it.get('description') or '')[:120])}")
+    else:
+        L.append("（无）")
+    L.append("")
+
+    attach_dir = tdir / "attachments"
+    files = sorted(p for p in attach_dir.iterdir() if p.is_file()) \
+        if attach_dir.is_dir() else []
+    L.append("## 附件\n")
+    if files:
+        for p in files:
+            L.append(f"- {p.name}（{p.stat().st_size} 字节）")
+    else:
+        L.append("（无）")
+    L.append("")
+    L.append("---\n*本报告由 sapper-ui 基于任务图谱自动生成；"
+             "交互式图谱见界面「图谱」页或 `sapper view`。*")
+
+    return {
+        "markdown": "\n".join(L),
+        "flag_count": len(flags),
+        "flags": flags,
+        "path": str(tdir / "writeup.md"),
+        "facts": len(facts),
+        "intents": len(intents),
+    }
+
+
+def save_report(tdir: Path) -> dict:
+    """生成并写入 writeup.md；flag 数有增长时把报告登记为图谱 fact（幂等）。"""
+    rep = generate_report(tdir)
+    if rep["flag_count"] == 0:
+        raise ValueError("还没有捕获 flag，无法生成解题报告")
+    path = tdir / "writeup.md"
+    path.write_text(rep["markdown"], encoding="utf-8")
+    ui = load_ui_state(tdir)
+    if (ui.get("writeup") or {}).get("flags") != rep["flag_count"]:
+        code, out = run_sapper(tdir, [
+            "fact", f"解题报告（{rep['flag_count']} 个 flag）",
+            "-k", "note", "-t", "解题报告", "--doc-file", str(path),
+        ])
+        if code == 0:
+            ui["writeup"] = {"flags": rep["flag_count"],
+                             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            save_ui_state(tdir, ui)
+        else:
+            rep["fact_warning"] = f"报告已保存，登记图谱失败: {out[:200]}"
+    rep["saved"] = True
+    return rep
+
+
+def maybe_autoreport(name: str, tdir: Path) -> None:
+    """auto 进程退出后调用：已有 flag 且还没写过报告时自动生成。"""
+    try:
+        rep = generate_report(tdir)
+        if rep["flag_count"] and not (tdir / "writeup.md").exists():
+            r = save_report(tdir)
+            append_log(name, f"[ui] 检测到 {r['flag_count']} 个 flag，"
+                             f"已自动生成解题报告: {r['path']}")
+    except Exception as exc:
+        append_log(name, f"[ui] 自动生成解题报告失败: {exc}")
+
+
 def safe_filename(raw: str) -> str:
     name = Path(raw.replace("\\", "/")).name.strip()
     # Windows 保留字符 + 控制字符一并去掉
@@ -908,23 +1082,18 @@ class Handler(BaseHTTPRequestHandler):
             if not (tdir / ".sapper").exists():
                 return self._json({"flags": []})
             _, graph = run_sapper(tdir, ["graph", "--format", "json"], timeout=30)
-            flags = []
             try:
-                g = json.loads(graph)
-                for f in g.get("facts", []):
-                    if f.get("kind") != "flag":
-                        continue
-                    d = f.get("data") or {}
-                    flags.append({
-                        "id": f.get("id", ""),
-                        "value": d.get("value", ""),
-                        "status": d.get("status", "recorded"),
-                        "challenge": d.get("challenge", ""),
-                        "created_at": f.get("created_at", ""),
-                    })
+                flags = extract_flags(json.loads(graph))
             except Exception:
-                pass
+                flags = []
             return self._json({"flags": flags})
+
+        m = re.fullmatch(r"/api/report/([^/]+)", path)
+        if m:
+            tdir = task_dir(tasks_root, unquote(m.group(1)))
+            if not (tdir / ".sapper").exists():
+                return self._json({"error": "任务不存在"}, 404)
+            return self._json(generate_report(tdir))
 
         m = re.fullmatch(r"/view/([^/]+)", path)
         if m:
@@ -1207,6 +1376,20 @@ class Handler(BaseHTTPRequestHandler):
                     engine_override=engine_override,
                 )
                 return self._json({"ok": True, "released": released})
+            except Exception as exc:
+                return self._json({"error": str(exc)}, 500)
+
+        if path == "/api/report":
+            try:
+                b = self._body()
+                name = str(b.get("name") or "")
+                tdir = task_dir(tasks_root, name)
+                if not (tdir / ".sapper").exists():
+                    return self._json({"error": "任务不存在"}, 404)
+                rep = save_report(tdir)
+                return self._json(rep)
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 400)
             except Exception as exc:
                 return self._json({"error": str(exc)}, 500)
 

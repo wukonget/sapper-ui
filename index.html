@@ -129,6 +129,21 @@
   #edit-box textarea { min-height:70px; }
   #edit-box textarea#edit-desc { min-height:110px; font-family:Consolas,monospace; font-size:12.5px; }
   #edit-msg { margin-top:10px; white-space:pre-wrap; font-size:12px; color:var(--dim); }
+  /* ---- 解题报告 ---- */
+  #report-bar { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  #report-hint { color:var(--dim); font-size:12px; word-break:break-all; }
+  #report-mask { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+                 align-items:center; justify-content:center; z-index:60; }
+  #report-mask.on { display:flex; }
+  #report-box { width:min(760px,94vw); max-height:88vh; display:flex; flex-direction:column;
+                background:var(--panel); border:1px solid var(--line); border-radius:10px;
+                padding:16px 18px; }
+  #report-box h2 { margin:0 0 10px; font-size:15px; color:var(--accent); }
+  #report-md { flex:1; min-height:0; overflow:auto; background:#0a0d12; border:1px solid var(--line);
+               border-radius:8px; padding:12px 14px; white-space:pre-wrap; word-break:break-all;
+               font:12.5px/1.55 Consolas,monospace; color:#c9d1d9; }
+  #report-actions { display:flex; gap:8px; margin-top:12px; align-items:center; }
+  #report-path { color:var(--dim); font-size:12px; margin-left:auto; word-break:break-all; }
   #edit-msg.err { color:var(--red); }
 </style>
 </head>
@@ -227,12 +242,30 @@
     </div>
     <div id="log" class="pane">选择或创建任务后，「开始测试」的实时输出会滚动显示在这里。</div>
     <pre id="status-pre" class="pane"></pre>
-    <div id="flag-panel" class="pane"><div id="flag-list"></div></div>
+    <div id="flag-panel" class="pane">
+      <div id="report-bar">
+        <button id="btn-report" class="copy-btn" disabled>📝 生成解题报告</button>
+        <span id="report-hint">捕获 flag 后可一键生成 Markdown 解题报告（auto 结束时也会自动生成到任务目录 writeup.md）</span>
+      </div>
+      <div id="flag-list"></div>
+    </div>
     <div id="graph-panel" class="pane">
       <iframe id="graph-frame" title="图谱"></iframe>
     </div>
   </div>
 </main>
+
+<div id="report-mask">
+  <div id="report-box">
+    <h2>📝 解题报告预览 <span id="report-name" style="color:var(--dim);font-size:13px"></span></h2>
+    <div id="report-md"></div>
+    <div id="report-actions">
+      <button id="report-copy" class="copy-btn">复制 Markdown</button>
+      <button id="report-close">关闭</button>
+      <span id="report-path"></span>
+    </div>
+  </div>
+</div>
 
 <div id="edit-mask">
   <div id="edit-box">
@@ -396,6 +429,7 @@ async function pollFlags(){
 
 function renderFlags(flags){
   lastFlags = flags;
+  $("btn-report").disabled = !flags.length;
   const banner = $("flag-banner");
   if (flags.length){
     banner.style.display = "flex";
@@ -453,6 +487,28 @@ async function copyText(text, btn){
 
 $("fb-copy").onclick = () => { if (lastFlags.length) copyText(lastFlags[lastFlags.length-1].value, $("fb-copy")); };
 $("fb-goto").onclick = () => showTab("flags");
+
+/* ---- 解题报告 ---- */
+let lastReport = "";
+function openReport(d){
+  lastReport = d.markdown || "";
+  $("report-name").textContent = "· " + cur;
+  $("report-md").textContent = lastReport;
+  $("report-path").textContent = "已保存: " + (d.path || "");
+  $("report-mask").classList.add("on");
+}
+$("btn-report").onclick = async () => {
+  if (!cur) return;
+  const hint = $("report-hint");
+  hint.textContent = "生成中…";
+  const d = await api("/api/report", {name: cur});
+  if (d.error){ hint.textContent = "✗ " + d.error; return; }
+  hint.textContent = d.fact_warning ? ("⚠ " + d.fact_warning) : "";
+  openReport(d);
+};
+$("report-copy").onclick = (e) => copyText(lastReport, e.target);
+$("report-close").onclick = () => $("report-mask").classList.remove("on");
+$("report-mask").onclick = (e) => { if (e.target === $("report-mask")) $("report-mask").classList.remove("on"); };
 
 $("btn-create").onclick = async () => {
   const msg = $("create-msg"); msg.className=""; msg.textContent = "创建中…";
