@@ -12,6 +12,8 @@
 import json
 import os
 import re
+import shutil
+import signal
 import ssl
 import subprocess
 import sys
@@ -24,6 +26,8 @@ from urllib.parse import urlparse, unquote
 
 ENV_PATH = Path(os.environ.get("TOKEN_CONSOLE_ENV") or Path.home() / "ctf" / "sapper.env")
 PI_PATH = Path(os.environ.get("TOKEN_CONSOLE_PI") or Path.home() / ".pi" / "agent" / "models.json")
+TASKS_ROOT = Path(os.environ.get("TOKEN_CONSOLE_TASKS") or Path.home() / "ctf" / "tasks")
+SAPPER_BIN = shutil.which("sapper") or str(Path.home() / ".local" / "bin" / "sapper")
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TOKEN_CONSOLE_PORT") or "8790")
 
@@ -227,6 +231,93 @@ def balance_probe(base_url: str, key: str) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 运行体检
+def _proc_info(pid: int):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = [c for c in f.read().decode("utf-8", "replace").split("\0") if c]
+        ppid = None
+        with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    ppid = int(line.split()[1])
+                    break
+        return {"pid": pid, "ppid": ppid, "cmd": " ".join(cmd)[:140],
+                "exe": cmd[0].split("/")[-1] if cmd else ""}
+    except Exception:
+        return None
+
+
+def health_scan() -> dict:
+    """孤儿 pi / 残留 wrapper / auto / 被死进程占住的 claim。"""
+    procs = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            i = _proc_info(int(d))
+            if i:
+                procs[i["pid"]] = i
+    autos = [p for p in procs.values() if "sapper" in p["cmd"] and " auto" in " " + p["cmd"]]
+    wrappers = [p for p in procs.values() if "sapper-pi-engine" in p["cmd"]]
+    wrap_ids = {p["pid"] for p in wrappers}
+    pis = [p for p in procs.values() if p["exe"] == "pi"]
+    pi_orphans = [p for p in pis if p["ppid"] not in wrap_ids]
+    claims, dead_claims = [], 0
+    if TASKS_ROOT.is_dir():
+        for d in sorted(TASKS_ROOT.iterdir()):
+            store = d / ".sapper"
+            if not store.is_dir():
+                continue
+            try:
+                r = subprocess.run([SAPPER_BIN, "--store", str(store), "status"],
+                                   capture_output=True, text=True, timeout=15)
+                for line in (r.stdout or "").splitlines():
+                    m = re.search(r"\[claimed by (.+?)\]", line)
+                    s = line.strip()
+                    if m and s.startswith("i") and re.match(r"^i\d+", s):
+                        iid = s.split()[0]
+                        worker = m.group(1)
+                        pm = re.search(r"-(\d+)$", worker)
+                        cpid = int(pm.group(1)) if pm else None
+                        alive = bool(cpid and cpid in procs)
+                        claims.append({"task": d.name, "intent": iid,
+                                       "worker": worker, "alive": alive})
+            except Exception:
+                continue
+    return {"autos": autos, "wrappers": wrappers, "pi_orphans": pi_orphans,
+            "claims": claims}
+
+
+def health_cleanup() -> dict:
+    h = health_scan()
+    killed, released = [], []
+    auto_ids = {p["pid"] for p in h["autos"]}
+    for p in h["pi_orphans"]:
+        try:
+            os.kill(p["pid"], signal.SIGKILL)
+            killed.append(f"pi#{p['pid']}")
+        except OSError:
+            pass
+    for w in h["wrappers"]:
+        if w["ppid"] not in auto_ids:
+            try:
+                os.kill(w["pid"], signal.SIGKILL)
+                killed.append(f"wrapper#{w['pid']}")
+            except OSError:
+                pass
+    for c in h["claims"]:
+        if c["alive"]:
+            continue
+        try:
+            r = subprocess.run([SAPPER_BIN, "--store", str(TASKS_ROOT / c["task"] / ".sapper"),
+                                "release", c["intent"], "--worker", c["worker"]],
+                               capture_output=True, text=True, timeout=15)
+            if "released" in (r.stdout or ""):
+                released.append(f"{c['task']}/{c['intent']}")
+        except Exception:
+            continue
+    return {"ok": True, "killed": killed, "released": released, "recheck": health_scan()}
+
+
 # ---------------------------------------------------------------- HTTP
 INDEX = (Path(__file__).parent / "index.html").read_bytes() if \
     (Path(__file__).parent / "index.html").exists() else b"<h1>index.html missing</h1>"
@@ -253,6 +344,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/overview":
             try:
                 return self._json(self.overview())
+            except Exception as exc:
+                return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+        if path == "/api/health":
+            try:
+                return self._json(health_scan())
             except Exception as exc:
                 return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
         if path not in ("/", "/index.html"):
@@ -401,6 +497,8 @@ class Handler(BaseHTTPRequestHandler):
                         text = env_set(text, k, v)
                 env_write(text)
                 return self._json({"ok": True, "overview": self.overview()})
+            if path == "/api/health/cleanup":
+                return self._json(health_cleanup())
             if path == "/api/test":
                 b = self._body()
                 base_url = str(b.get("base_url") or "").strip()

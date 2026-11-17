@@ -110,6 +110,16 @@ pre{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:10
 </div>
 
 <div class="card">
+  <h2>🩺 运行体检</h2>
+  <div class="row">
+    <button class="mini pri" id="h-check">检查</button>
+    <button class="mini" id="h-clean">一键清理（杀孤儿 / 释放死 claim）</button>
+    <span class="sub" id="h-hint">检测孤儿 pi、残留 wrapper、被死进程占住的 claim</span>
+  </div>
+  <div id="h-out" class="sub"></div>
+</div>
+
+<div class="card">
   <h2>预算（sapper.env）</h2>
   <div class="row" id="budget-row"></div>
   <button class="pri mini" id="budget-save">保存预算</button>
@@ -340,6 +350,34 @@ $("budget-save").onclick = async ()=>{
   const d = await api("/api/budget/save", body);
   $("budget-hint").innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` :
     '<span class="ok">✓ 已保存（重启 sapper-ui 后对新任务生效）</span>';
+};
+
+function healthHtml(h){
+  const a = h.autos||[], w = h.wrappers||[], o = h.pi_orphans||[], c = h.claims||[];
+  const parts = [`auto 进程 <b>${a.length}</b> 个` +
+    (a.length ? "：" + a.map(x=>"#"+x.pid).join(", ") : ""),
+    `wrapper ${w.length} 个`];
+  if(o.length) parts.push(`<span class="bad">⚠ 孤儿 pi ${o.length} 个：${o.map(x=>"#"+x.pid).join(", ")}</span>`);
+  const dead = c.filter(x=>!x.alive);
+  if(dead.length) parts.push(`<span class="bad">⚠ 死 claim ${dead.length} 条：${dead.map(x=>esc(x.task)+"/"+x.intent).join(", ")}</span>`);
+  const live = c.filter(x=>x.alive);
+  if(live.length) parts.push(`活跃 claim ${live.length} 条`);
+  return parts.join("<br>") || "空";
+}
+
+$("h-check").onclick = async ()=>{
+  $("h-out").innerHTML = "检查中…";
+  const d = await api("/api/health");
+  $("h-out").innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` : healthHtml(d);
+};
+
+$("h-clean").onclick = async ()=>{
+  if(!confirm("杀掉孤儿 pi / 残留 wrapper，释放被死进程占住的 claim？")) return;
+  $("h-out").innerHTML = "清理中…";
+  const d = await api("/api/health/cleanup", {});
+  if(d.error){ $("h-out").innerHTML = `<span class="bad">${esc(d.error)}</span>`; return; }
+  $("h-out").innerHTML = `<span class="ok">✓ 清理完成</span> 杀：${esc((d.killed||[]).join(", ")||"无")} / 释放：${esc((d.released||[]).join(", ")||"无")}<br>` +
+    healthHtml(d.recheck||{});
 };
 
 async function venueRun(mode, body){

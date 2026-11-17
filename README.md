@@ -187,6 +187,7 @@ sapper status / graph / hint "补充提示" / flag 'flag{...}'
   one-api 平台若暴露计费端点会顺带显示额度
 - **现场一键接入**：填地址/key/模型名点一下，等价于 `venue/venue-setup.sh`
   五步流程（先冒烟后写配置，失败不碰任何文件）
+- **运行体检**：检测孤儿 pi / 残留 wrapper / 被死进程占住的 claim，一键清理
 
 启动：`python3 token-console/server.py`（127.0.0.1:8790）。
 所有写操作自动备份（保留最近 5 份）。
