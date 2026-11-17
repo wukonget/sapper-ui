@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Token 管理台</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--line:#2b3240;--fg:#d7dee8;--dim:#8a93a5;
+      --accent:#4c8dff;--green:#3fb96f;--red:#e5534b;--yellow:#d9a53f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:13.5px/1.55 "Microsoft YaHei",system-ui,sans-serif;padding:18px 22px 60px}
+h1{font-size:16px;margin:0 0 4px}
+h2{font-size:13.5px;color:var(--accent);margin:0 0 10px}
+.sub{color:var(--dim);font-size:12px;margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+      padding:14px 16px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--dim);text-align:left;font-weight:normal;padding:4px 8px;border-bottom:1px solid var(--line)}
+td{padding:5px 8px;border-bottom:1px solid #1e2530;vertical-align:top;word-break:break-all}
+input,select,button{font:inherit;background:#0a0d12;color:var(--fg);
+     border:1px solid var(--line);border-radius:6px;padding:4px 8px}
+input:focus{outline:1px solid var(--accent)}
+button{cursor:pointer;background:#1c2531}
+button:hover{border-color:var(--accent)}
+button.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+button.mini{padding:2px 8px;font-size:12px}
+button.danger{color:var(--red)}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.row label{display:flex;flex-direction:column;gap:3px;color:var(--dim);font-size:12px}
+.row input,.row select{min-width:120px}
+.badge{display:inline-block;padding:1px 8px;border-radius:8px;font-size:11px;
+       border:1px solid var(--line);color:var(--dim)}
+.badge.cur{color:var(--green);border-color:var(--green)}
+.ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--yellow)}
+pre{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:10px;
+    font:12px/1.5 Consolas,monospace;white-space:pre-wrap;word-break:break-all;margin:8px 0 0}
+.notice{background:#2a2410;border:1px solid #5a4a1e;color:var(--yellow);
+        border-radius:8px;padding:8px 12px;font-size:12.5px;margin-bottom:14px}
+.hidden{display:none}
+#test-out td{border-bottom:1px solid #1e2530}
+.mono{font-family:Consolas,monospace}
+</style>
+</head>
+<body>
+<h1>🔑 Token 管理台 <span class="badge" id="env-path"></span></h1>
+<div class="sub">档位=~/.pi/agent/models.json（key 实际存放） · 当前档=sapper.env 的 SAPPER_MODEL · key 池=SAPPER_KEY_POOL（failover 自动轮换）</div>
+
+<div class="notice">⚠ 改完 sapper.env（当前档/池/预算）后，<b>需重启 sapper-ui</b> 才对新启动的任务生效
+（运行中的 auto 不受影响也不会被杀；pi 引擎读 models.json 是每次任务即时读，档位 key 改完即生效）。
+卡死强杀 UI：<code>pgrep -f "sapper-ui/node_modules/[e]lectron"</code>。</div>
+
+<div class="card">
+  <h2>🚀 现场一键接入（venue-setup：写档位 + 设当前 + 入池 + 三重冒烟）</h2>
+  <div class="row">
+    <label>平台地址（one-api 带 /v1，漏了自动补）<input id="v-url" placeholder="http://ip:3000/v1" style="width:230px"></label>
+    <label>API Key<input id="v-key" type="password" placeholder="sk-..." style="width:200px"></label>
+    <label>模型名<input id="v-model" value="deepseek-v4.1-flash" style="width:165px"></label>
+    <label style="justify-content:flex-end"><button class="pri" id="v-go">🚀 一键接入</button></label>
+    <label style="justify-content:flex-end"><button id="v-restore">↩ 恢复默认档</button></label>
+  </div>
+  <label style="margin-top:6px"><input type="checkbox" id="v-btfly"> 同时配置 CTF-BTFly 备份链路（写 bin/.env venue 档并重启 daemon，GUI 会自动重连）</label>
+  <div id="v-out" class="sub">等价于终端跑 venue-setup.sh；含 pi 直连 + 引擎冒烟，约 1~3 分钟，点后耐心等。改过配置记得重开 sapper-ui。</div>
+</div>
+
+<div class="card">
+  <h2>当前档</h2>
+  <div id="cur-line">—</div>
+  <div class="sub" id="fallback-line"></div>
+</div>
+
+<div class="card">
+  <h2>档位（pi providers）</h2>
+  <table id="prov-tbl"><thead><tr>
+    <th>档位</th><th>平台地址</th><th>Key</th><th>模型</th><th>操作</th></tr></thead>
+    <tbody id="prov-tbody"></tbody></table>
+  <div style="margin-top:12px" class="row">
+    <label>档位名<input id="np-name" placeholder="venue" style="width:110px"></label>
+    <label>平台地址（one-api 带 /v1，不带会自动补试）<input id="np-url" placeholder="http://ip:3000/v1" style="width:260px"></label>
+    <label>API Key（更新已有档可留空=沿用）<input id="np-key" type="password" placeholder="sk-..." style="width:220px"></label>
+    <label>模型名<input id="np-model" placeholder="deepseek-v4.1-flash" style="width:170px"></label>
+    <label style="justify-content:flex-end">
+      <button class="pri" id="np-save">保存档位</button></label>
+  </div>
+  <div id="np-hint" class="sub"></div>
+</div>
+
+<div class="card">
+  <h2>Key 池（SAPPER_KEY_POOL，额度/欠费自动轮到下一条）</h2>
+  <table id="pool-tbl"><thead><tr>
+    <th>名称</th><th>平台地址</th><th>模型</th><th>Token（留空=沿用）</th><th>状态</th><th></th></tr></thead>
+    <tbody id="pool-tbody"></tbody></table>
+  <div class="row" style="margin-top:10px">
+    <button class="mini" id="pool-add">+ 加一条</button>
+    <button class="mini" id="pool-fill">从当前档生成</button>
+    <button class="mini" id="pool-test">▶ 全池测试</button>
+    <button class="pri mini" id="pool-save">保存池到 sapper.env</button>
+  </div>
+  <div id="pool-out" class="hidden"></div>
+</div>
+
+<div class="card">
+  <h2>单 key 冒烟测试</h2>
+  <div class="row">
+    <label>平台地址<input id="t-url" style="width:260px"></label>
+    <label>API Key<input id="t-key" type="password" style="width:220px"></label>
+    <label>模型名<input id="t-model" style="width:170px"></label>
+    <label style="justify-content:flex-end"><button class="pri" id="t-go">测试</button></label>
+  </div>
+  <div id="t-out" class="sub">测试 = 发一条 max_tokens=4 的最小请求，几乎不花 token。</div>
+</div>
+
+<div class="card">
+  <h2>预算（sapper.env）</h2>
+  <div class="row" id="budget-row"></div>
+  <button class="pri mini" id="budget-save">保存预算</button>
+  <span class="sub" id="budget-hint"></span>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const BUDGET_LABELS = {
+  SAPPER_TOTAL_MINUTES:"全场总预算(分)", SAPPER_MINUTES_PER_CHALLENGE:"单题默认(分)",
+  SAPPER_MAX_STEPS:"单题最大步数", SAPPER_RETRY_MODEL:"失败重试次数",
+  SAPPER_TIMEOUT:"单次调用上限(秒)", SAPPER_AGENT_MAX_SECONDS:"UI 单 agent 时限(秒)"};
+
+async function api(path, body){
+  try{
+    const r = await fetch(path, body ? {method:"POST",headers:{"Content-Type":"application/json"},
+                                        body:JSON.stringify(body)} : {});
+    return await r.json();
+  }catch(e){ return {error:"无法连接后端"} }
+}
+
+function resultHtml(r){
+  if(r.ok){
+    const u = r.tokens ? `prompt ${r.tokens.prompt_tokens??'?'}` +
+      ` / completion ${r.tokens.completion_tokens??'?'}` : "";
+    return `<span class="ok">✓ ${r.latency_ms}ms</span> ${esc(u)}` +
+      (r.reply ? ` <span class="sub">回复: ${esc(r.reply)}</span>` : "") +
+      (r.note ? ` <span class="warn">${esc(r.note)}</span>` : "");
+  }
+  return `<span class="bad">✗ ${esc(r.err_class||r.error||"失败")}</span>` +
+    (r.detail ? ` <span class="sub mono" title="${esc(r.detail)}">${esc(r.detail.slice(0,90))}</span>` : "") +
+    (r.note ? ` <span class="warn">${esc(r.note)}</span>` : "");
+}
+
+function balanceHtml(b){
+  if(!b || !b.quota) return "";
+  const q = b.quota, hard = q.hard_limit_usd, used = (b.usage && b.usage.total_usage) ? b.usage.total_usage/100 : null;
+  const parts=[];
+  if(hard != null) parts.push(`额度 $${hard}`);
+  if(used != null) parts.push(`已用 $${used.toFixed(2)}`);
+  return parts.length ? ` <span class="badge">${esc(parts.join(" / "))}</span>` : "";
+}
+
+let OV = null;
+async function refresh(){
+  OV = await api("/api/overview");
+  if(OV.error){ $("cur-line").innerHTML = `<span class="bad">${esc(OV.error)}</span>`; return; }
+  $("env-path").textContent = OV.env_path;
+  $("cur-line").innerHTML = OV.sapper_model
+    ? `<b class="mono">${esc(OV.sapper_model)}</b> ` +
+      (OV.providers[OV.cur_provider]
+        ? `→ ${esc(OV.providers[OV.cur_provider].base_url)} ` +
+          `key ${esc(OV.providers[OV.cur_provider].key_masked)}`
+        : `<span class="bad">（档位 ${esc(OV.cur_provider)} 不在 models.json！）</span>`)
+    : '<span class="warn">未设置 SAPPER_MODEL</span>';
+  $("fallback-line").textContent = OV.anthropic_fallback.base_url
+    ? `GLM 兜底(anthropic 协议): ${OV.anthropic_fallback.base_url} token ${OV.anthropic_fallback.token_masked}` : "";
+  // providers
+  const tb = $("prov-tbody"); tb.innerHTML = "";
+  for(const [name,p] of Object.entries(OV.providers)){
+    const cur = name === OV.cur_provider;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(name)} ${cur?'<span class="badge cur">当前</span>':""}</td>` +
+      `<td class="mono">${esc(p.base_url)}</td><td class="mono">${esc(p.key_masked)}</td>` +
+      `<td>${p.models.map(m=>`<span class="badge">${esc(m)}</span>`).join(" ")}</td>` +
+      `<td><button class="mini" data-t="${esc(name)}">测试</button> ` +
+      `<button class="mini" data-u="${esc(name)}">设为当前</button> ` +
+      `<button class="mini" data-p="${esc(name)}">入池</button> ` +
+      `<button class="mini danger" data-x="${esc(name)}">删</button></td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>testProvider(b.dataset.t));
+  tb.querySelectorAll("[data-u]").forEach(b=>b.onclick=()=>useProvider(b.dataset.u));
+  tb.querySelectorAll("[data-p]").forEach(b=>b.onclick=()=>poolFromProvider(b.dataset.p));
+  tb.querySelectorAll("[data-x]").forEach(b=>b.onclick=()=>deleteProvider(b.dataset.x));
+  // pool
+  const pt = $("pool-tbody"); pt.innerHTML = "";
+  OV.pool.forEach((e,i)=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><input data-k="name" value="${esc(e.name||"")}" style="width:130px"></td>` +
+      `<td><input data-k="base_url" value="${esc(e.base_url||"")}" style="width:210px" class="mono"></td>` +
+      `<td><input data-k="model" value="${esc(e.model||"")}" style="width:150px" class="mono"></td>` +
+      `<td><input data-k="token" type="password" placeholder="留空=沿用" style="width:180px"></td>` +
+      `<td class="st">—</td>` +
+      `<td><button class="mini" data-i="${i}">测试</button> ` +
+      `<button class="mini danger" data-d="${i}">删</button></td>`;
+    pt.appendChild(tr);
+  });
+  pt.querySelectorAll("[data-i]").forEach(b=>b.onclick=()=>testPoolRow(+b.dataset.i));
+  pt.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>{
+    b.closest("tr").remove();               // 只删本地行；点「保存池」才落盘
+    $("pool-out").classList.remove("hidden");
+    $("pool-out").innerHTML = '<span class="warn">已移除一行（未保存）——确认无误后点「保存池到 sapper.env」生效</span>';
+  });
+  // budget
+  const br = $("budget-row"); br.innerHTML = "";
+  for(const [k,label] of Object.entries(BUDGET_LABELS)){
+    const l = document.createElement("label");
+    l.innerHTML = `${label}<input data-b="${k}" value="${esc(OV.budget[k]||"")}" style="width:110px">`;
+    br.appendChild(l);
+  }
+}
+
+function poolRows(){
+  return [...document.querySelectorAll("#pool-tbl tbody tr")].map(tr=>{
+    const g=k=>tr.querySelector(`[data-k="${k}"]`);
+    return {name:g("name").value.trim(), base_url:g("base_url").value.trim(),
+            model:g("model").value.trim(), token:g("token").value.trim()};
+  });
+}
+
+async function testProvider(name){
+  $("pool-out").classList.remove("hidden");
+  $("pool-out").innerHTML = `<span class="sub">测试档位 ${esc(name)} …</span>`;
+  const d = await api("/api/test_provider", {name});
+  $("pool-out").innerHTML = `<b>${esc(name)}</b> ` +
+    (d.error ? `<span class="bad">${esc(d.error)}</span>` : resultHtml(d) + balanceHtml(d.balance));
+}
+
+async function useProvider(name){
+  const model = prompt(`设为当前档「${name}」，用哪个模型？`, (OV.providers[name].models[0]||""));
+  if(model == null) return;
+  const d = await api("/api/provider/use", {name, model});
+  if(d.error) alert(d.error); else refresh();
+}
+
+async function poolFromProvider(name){
+  const model = prompt(`把「${name}」写入 key 池，用哪个模型？`, (OV.providers[name].models[0]||""));
+  if(model == null) return;
+  const d = await api("/api/pool/from_provider", {name, model});
+  if(d.error) alert(d.error); else refresh();
+}
+
+async function deleteProvider(name){
+  const isCur = name === OV.cur_provider;
+  const msg = `确定删除档位「${name}」？` +
+    (isCur ? "\n⚠ 它是当前档，删除后 SAPPER_MODEL 悬空，需马上「设为当前」其它档位！" : "") +
+    "\n（models.json 会先自动备份；key 池条目不受影响）";
+  if(!confirm(msg)) return;
+  const d = await api("/api/provider/delete", {name});
+  if(d.error){ alert(d.error); return; }
+  if(d.warn) alert(d.warn);
+  refresh();
+}
+
+function resolveToken(r){
+  if(r.token) return r.token;
+  const hit = (OV.pool||[]).find(x => x.name === r.name && x.base_url === r.base_url);
+  return hit ? hit.token : "";
+}
+
+async function testPoolRow(i){
+  const rows = poolRows(), e = rows[i], st = document.querySelectorAll("#pool-tbody .st")[i];
+  st.innerHTML = '<span class="sub">测试中…</span>';
+  const d = await api("/api/test", {base_url:e.base_url, key:resolveToken(e), model:e.model});
+  st.innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` :
+    resultHtml(d) + (d.ok ? balanceHtml(d.balance) : "");
+}
+
+$("np-save").onclick = async ()=>{
+  $("np-hint").textContent = "保存中…";
+  const d = await api("/api/provider/save", {name:$("np-name").value, base_url:$("np-url").value,
+    key:$("np-key").value, model:$("np-model").value});
+  if(d.error){ $("np-hint").innerHTML = `<span class="bad">${esc(d.error)}</span>`; return; }
+  $("np-hint").innerHTML = '<span class="ok">✓ 已写入 models.json</span>（要当主档点表格里「设为当前」；要 failover 点「入池」）';
+  $("np-key").value = "";
+  refresh();
+};
+
+$("pool-add").onclick = ()=>{ const rows=poolRows(); rows.push({name:"",base_url:"",model:"",token:""});
+  renderPoolRows(rows); };
+$("pool-fill").onclick = ()=>{
+  const p = OV.providers[OV.cur_provider]; if(!p){ alert("当前档不存在"); return; }
+  const rows = poolRows().filter(r=>!(r.name===OV.cur_provider && r.model===OV.cur_model));
+  rows.unshift({name:OV.cur_provider, base_url:p.base_url, model:OV.cur_model, token:""});
+  renderPoolRows(rows);
+};
+function renderPoolRows(rows){
+  const tb = document.querySelector("#pool-tbl tbody"); tb.innerHTML = "";
+  for(const e of rows){
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><input data-k="name" value="${esc(e.name||"")}" style="width:130px"></td>` +
+      `<td><input data-k="base_url" value="${esc(e.base_url||"")}" style="width:210px" class="mono"></td>` +
+      `<td><input data-k="model" value="${esc(e.model||"")}" style="width:150px" class="mono"></td>` +
+      `<td><input data-k="token" type="password" placeholder="留空=沿用" style="width:180px"></td>` +
+      `<td class="st">—</td>` +
+      `<td><button class="mini" data-i="0">测试</button> <button class="mini danger" data-d="0">删</button></td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll("[data-i]").forEach((b,i)=>b.onclick=()=>testPoolRow(i));
+  tb.querySelectorAll("[data-d]").forEach((b,i)=>b.onclick=()=>{ const r=poolRows(); r.splice(i,1); renderPoolRows(r); });
+}
+
+$("pool-save").onclick = async ()=>{
+  const d = await api("/api/pool/save", {entries: poolRows()});
+  if(d.error) alert(d.error); else refresh();
+};
+$("pool-test").onclick = async ()=>{
+  const st = document.querySelectorAll("#pool-tbody .st");
+  const rows = poolRows();
+  const todo = [];
+  rows.forEach((r,i)=>{
+    if(!(r.base_url && r.model)) return;
+    todo.push([r,i]); st[i].innerHTML='<span class="sub">…</span>';
+  });
+  if(!todo.length){ alert("池里没有可测条目（需要 地址+模型）"); return; }
+  for(const [r,i] of todo){
+    const d = await api("/api/test", {base_url:r.base_url, key:resolveToken(r), model:r.model});
+    st[i].innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` :
+      resultHtml(d) + (d.ok ? balanceHtml(d.balance) : "");
+  }
+};
+
+$("t-go").onclick = async ()=>{
+  $("t-out").innerHTML = '<span class="sub">测试中…</span>';
+  const d = await api("/api/test", {base_url:$("t-url").value, key:$("t-key").value, model:$("t-model").value});
+  $("t-out").innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` :
+    `<div>${resultHtml(d)}${d.ok?balanceHtml(d.balance):""}</div>` +
+    (d.url ? `<div class="sub mono">${esc(d.url)}</div>` : "");
+};
+
+$("budget-save").onclick = async ()=>{
+  const body = {};
+  document.querySelectorAll("[data-b]").forEach(i=>body[i.dataset.b]=i.value);
+  const d = await api("/api/budget/save", body);
+  $("budget-hint").innerHTML = d.error ? `<span class="bad">${esc(d.error)}</span>` :
+    '<span class="ok">✓ 已保存（重启 sapper-ui 后对新任务生效）</span>';
+};
+
+async function venueRun(mode, body){
+  const b = $("v-out");
+  b.innerHTML = mode === "restore"
+    ? '<span class="warn">恢复中…</span>'
+    : '<span class="warn">接入中…（网关冒烟 → 写档位/当前档/池 → pi 直连 → 引擎冒烟，约 1~3 分钟）</span>';
+  const d = await api(mode === "restore" ? "/api/venue_restore" : "/api/venue_setup", body);
+  if(d.error){ b.innerHTML = `<span class="bad">${esc(d.error)}</span>`; return; }
+  b.innerHTML = (d.ok
+      ? '<span class="ok">✓ 接入完成</span>　<span class="sub">改过配置：重开 sapper-ui 对新任务生效</span>'
+      : `<span class="bad">✗ 失败（exit ${esc(d.code)}）</span>`);
+  const pre = document.createElement("pre");
+  pre.textContent = d.out || "(无输出)";
+  b.appendChild(pre);
+  $("v-key").value = "";
+  if(d.ok) refresh();
+}
+
+$("v-go").onclick = async ()=>{
+  if(!$("v-url").value.trim() || !$("v-key").value.trim()){ alert("平台地址和 API Key 必填"); return; }
+  if(!confirm("一键接入会覆盖「venue」档位与 key 池 venue 条目、切换当前档，并跑 1~3 分钟冒烟。继续？")) return;
+  venueRun("setup", {base_url:$("v-url").value.trim(), key:$("v-key").value.trim(),
+                     model:$("v-model").value.trim(), btfly:$("v-btfly").checked});
+};
+
+$("v-restore").onclick = async ()=>{
+  if(!confirm("恢复默认档 bjp-uzip？venue 档位将删除（其它档位/池条目保留）。")) return;
+  venueRun("restore", {});
+};
+
+refresh();
+</script>
+</body>
+</html>

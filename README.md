@@ -174,3 +174,27 @@ sapper status / graph / hint "补充提示" / flag 'flag{...}'
 后端只监听 `127.0.0.1`，并对每个请求做 Host 回环校验 + Origin 同源校验
 （浏览器里其他网页无法跨站调用 `/api/start` 等写操作）；密钥类配置在接口层统一打码。
 本程序仅限授权安全测试 / CTF 使用。
+
+## token-console：Token 管理台（配套小工具）
+
+围绕「单平台单模型 + N 条 key」的离线赛场景管理界面，纯 Python 标准库 + 单页 HTML，无第三方依赖：
+
+- **档位**（pi provider，`~/.pi/agent/models.json`）：接入/设为当前/入池/删除
+- **当前档**：sapper.env 的 `SAPPER_MODEL`（provider 限定形式）
+- **key 池**：sapper.env 的 `SAPPER_KEY_POOL` 可视化编辑（额度/欠费 failover）
+- **冒烟测试**：每条 key 发 `max_tokens=4` 最小请求，错误自动分类
+  （无效/额度不足/限流/路径或模型不存在——自动补 `/v1` 重试/超时/拒接），
+  one-api 平台若暴露计费端点会顺带显示额度
+- **现场一键接入**：填地址/key/模型名点一下，等价于 `venue/venue-setup.sh`
+  五步流程（先冒烟后写配置，失败不碰任何文件）
+
+启动：`python3 token-console/server.py`（127.0.0.1:8790）。
+所有写操作自动备份（保留最近 5 份）。
+
+## venue/：赛场 one-api 一键接入
+
+- `venue-setup.sh <BASE_URL> <API_KEY> <MODEL>`：先网关冒烟（失败不写文件）→
+  写 pi provider `venue` → 手术式更新 sapper.env 模型相关行（预算/路径/GLM 兜底
+  凭据原样保留）→ pi 直连冒烟 → sapper 引擎包装器冒烟
+- `venue-setup.sh --restore`：恢复默认档
+- `现场快速配置.md`：赛场操作手册
