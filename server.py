@@ -429,9 +429,10 @@ def run_sapper(tdir: Path, args: list[str], timeout: int = 120,
 
 
 def append_log(name: str, line: str) -> None:
+    stamped = f"[{time.strftime('%H:%M:%S')}] {line}"
     with LOCK:
         RUNNING.setdefault(name, {"proc": None, "log": deque(maxlen=4000), "lock": threading.Lock()})
-        RUNNING[name]["log"].append(line)
+        RUNNING[name]["log"].append(stamped)
 
 
 def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None,
@@ -463,6 +464,7 @@ def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None
     local_bin = str(Path.home() / ".local" / "bin")
     if local_bin and local_bin not in env.get("PATH", "").split(":"):
         env["PATH"] = env.get("PATH", "") + os.pathsep + local_bin
+    env["SAPPER_JOURNAL"] = str(tdir / ".sapper" / "agent-journal.jsonl")  # 派单心跳
     docker_mode = DEPLOY["mode"] == "docker"
     if docker_mode:
         ok, msg = ensure_container(tdir, name)
@@ -543,9 +545,89 @@ def stop_auto(name: str) -> bool:
     return True
 
 
+# ---------- 清场：赛场急救，扫杀未被 UI 跟踪的 agent 进程 ----------
+# agent 特征：命令行含 pi / tesseract / sapper / claude / codex / sage 词条，
+# 或 wrapper / 自研引擎脚本路径。保护规则：祖先链经过 server 自身或运行中
+# 任务的进程一律不动；其余命中者视为孤儿/遗留，SIGKILL。
+_AGENT_PROC_RE = re.compile(
+    r"(^|[/ \t])(pi|tesseract|sapper|claude|codex|sage)([ \t]|$)"
+    r"|pi-sapper-wrapper|sapper_agent\.py",
+)
+
+
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except Exception:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+
+
+def _protected_roots() -> set:
+    roots = {os.getpid()}
+    with LOCK:
+        for entry in RUNNING.values():
+            p = entry.get("proc")
+            if p is not None and p.poll() is None:
+                roots.add(p.pid)
+    return roots
+
+
+def _under_roots(pid: int, roots: set) -> bool:
+    """祖先链是否经过受保护根；父进程读不到/已死视为不在保护树内。"""
+    cur = pid
+    for _ in range(64):
+        if cur in roots:
+            return True
+        try:
+            with open(f"/proc/{cur}/stat") as fh:
+                ppid = int(fh.read().rsplit(") ", 1)[1].split()[1])
+        except Exception:
+            return False
+        if ppid <= 1:
+            return False
+        cur = ppid
+    return False
+
+
+def cleanup_orphans() -> dict:
+    roots = _protected_roots()
+    killed, skipped = [], []
+    for ent in Path("/proc").iterdir():
+        if not ent.name.isdigit():
+            continue
+        pid = int(ent.name)
+        if pid == os.getpid() or pid in roots:
+            continue
+        cmd = _proc_cmdline(pid)
+        if not cmd or not _AGENT_PROC_RE.search(cmd):
+            continue
+        if _under_roots(pid, roots):
+            skipped.append({"pid": pid, "cmd": cmd[:120]})
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append({"pid": pid, "cmd": cmd[:120]})
+        except Exception as exc:
+            skipped.append({"pid": pid, "cmd": cmd[:120], "err": str(exc)})
+    return {"killed": killed, "skipped": skipped}
+
+
+def panic_cleanup() -> dict:
+    """停止所有运行中任务，再扫杀残留 agent 进程。"""
+    with LOCK:
+        names = [n for n, e in RUNNING.items()
+                 if e.get("proc") and e["proc"].poll() is None]
+    stopped = [n for n in names if stop_auto(n)]
+    if stopped:
+        time.sleep(1.0)  # 等进程组死透，避免清扫时误判为孤儿（它们本来就在保护树内）
+    rep = cleanup_orphans()
+    rep["stopped_tasks"] = stopped
+    return rep
+
+
 def worker_alive(worker: str) -> bool:
     """worker 名形如 deepseek-flash-122308 / agent-1234，尾部是启动它的 PID。
-
     拿不到 PID 或无权探测时保守视为仍存活，避免抢别人的任务。
     """
     m = re.search(r"-(\d+)$", worker or "")
@@ -724,6 +806,10 @@ def upsert_model_profile(name: str, base_url: str, api_key: str, model: str) -> 
     providers[name] = {"name": name, "baseUrl": base_url, "api": "openai-completions",
                        "apiKey": api_key, "models": models}
     mp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    try:
+        mp.chmod(0o600)  # provider 里内嵌了 API Key，收紧权限
+    except OSError:
+        pass
 
     # ② sapper.env 的 SAPPER_MODEL 行（provider 限定形式）
     qualified = f"{name}/{model}"
@@ -793,23 +879,53 @@ def _config_info() -> dict:
 
 
 # ---------- 解题报告 ----------
-FLAG_STATUS_ZH = {"recorded": "已记录", "submitted": "已提交 ✓", "rejected": "提交被拒"}
+FLAG_STATUS_ZH = {"recorded": "已记录", "submitted": "已提交 ✓", "rejected": "提交被拒",
+                  "suspected": "疑似（未用 sapper flag 录入）"}
 INTENT_MARK = {"done": "✅", "claimed": "🔧", "open": "☐"}
+
+# flag 形态：前缀 2-16 位字母/数字/下划线 + 花括号内 4-120 位非空白字符
+_SUSPECT_FLAG_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]{1,15})\{([^{}\s]{4,120})\}")
+# 占位符形态的假 flag（题目描述里的格式示例等）：flag{...} / flag{xxx} / ctf{????}
+_PLACEHOLDER_INNER_RE = re.compile(r"^(?:[.?xX*…_]|(?:\.\.\.))+$", re.IGNORECASE)
 
 
 def extract_flags(graph: dict) -> list[dict]:
     out = []
+    seen = set()
     for f in (graph or {}).get("facts", []):
         if f.get("kind") != "flag":
             continue
         d = f.get("data") or {}
+        value = d.get("value", "")
+        seen.add(value)
         out.append({
             "id": f.get("id", ""),
-            "value": d.get("value", ""),
+            "value": value,
             "status": d.get("status", "recorded"),
             "challenge": d.get("challenge", ""),
             "created_at": f.get("created_at", ""),
         })
+    # 兜底：agent 忘用 `sapper flag`、把 flag 记成普通 fact 时，按形态扫描。
+    # status=suspected 只作提醒，不参与计分/提交。
+    for f in (graph or {}).get("facts", []):
+        if f.get("kind") == "flag":
+            continue
+        blob = f.get("description") or ""
+        for m in _SUSPECT_FLAG_RE.finditer(blob):
+            value = m.group(0)
+            inner = m.group(2)
+            if value in seen:
+                continue
+            if _PLACEHOLDER_INNER_RE.fullmatch(inner):
+                continue
+            seen.add(value)
+            out.append({
+                "id": f.get("id", ""),
+                "value": value,
+                "status": "suspected",
+                "challenge": (f.get("data") or {}).get("challenge", ""),
+                "created_at": f.get("created_at", ""),
+            })
     return out
 
 
@@ -1130,8 +1246,21 @@ class Handler(BaseHTTPRequestHandler):
                  for p in sorted(attach_dir.iterdir()) if p.is_file()]
                 if attach_dir.is_dir() else []
             )
+            # 派单日志（agent 心跳）：wrapper 每次模型调用写一行 start/end
+            journal = []
+            jpath = tdir / ".sapper" / "agent-journal.jsonl"
+            try:
+                if jpath.exists():
+                    for ln in jpath.read_text(encoding="utf-8",
+                                              errors="replace").splitlines()[-80:]:
+                        try:
+                            journal.append(json.loads(ln))
+                        except Exception:
+                            continue
+            except Exception:
+                pass
             return self._json({"status": status, "graph": gj, "graph_raw": graph,
-                               "attachments": attachments})
+                               "attachments": attachments, "journal": journal})
 
         m = re.fullmatch(r"/api/flags/([^/]+)", path)
         if m:
@@ -1474,6 +1603,13 @@ class Handler(BaseHTTPRequestHandler):
                 b = self._body()
                 ok = stop_auto(str(b.get("name") or ""))
                 return self._json({"ok": ok})
+            except Exception as exc:
+                return self._json({"error": str(exc)}, 500)
+
+        if path == "/api/cleanup":
+            # 赛场急救：停全部任务 + 杀孤儿 agent 进程
+            try:
+                return self._json(panic_cleanup())
             except Exception as exc:
                 return self._json({"error": str(exc)}, 500)
 
