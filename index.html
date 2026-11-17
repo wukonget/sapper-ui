@@ -92,6 +92,7 @@
   .st.recorded { color:var(--yellow); border-color:var(--yellow); }
   .st.submitted { color:var(--green); border-color:var(--green); }
   .st.rejected { color:var(--red); border-color:var(--red); }
+  .st.suspected { color:var(--accent); border-color:var(--accent); border-style:dashed; }
   .copy-btn { padding:2px 10px; font-size:12px; }
   /* ---- 附件与设置 ---- */
   input[type=file] { width:100%; color:var(--dim); font-size:12px; }
@@ -223,9 +224,12 @@
       <span style="color:var(--dim);font-size:12px">任务</span>
       <select id="task-sel"><option value="">— 未选择 —</option></select>
       <span id="badge" class="stop">未运行</span>
+      <span id="heartbeat" style="font-size:12px"></span>
       <button id="btn-edit" disabled title="编辑任务配置：目标、靶标、描述、提示、运行限制">编辑</button>
       <button id="btn-run" class="primary" disabled
               title="开始或继续当前任务；运行中点击则停止">▶ 开始/继续</button>
+      <button id="btn-cleanup" class="danger"
+              title="赛场急救：停止全部运行中任务，并杀掉所有未被本界面跟踪的 agent 进程（pi / tesseract / sapper / claude / sage 等）。注意：其他终端手动运行的同类程序也会被杀。">🧹 清场</button>
       <div id="tabs" style="margin-left:auto">
         <button id="tab-log" class="active">日志</button>
         <button id="tab-status">看板</button>
@@ -281,7 +285,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let cur = "", timer = null, tab = "log", running = false, runTimer = null;
+let cur = "", timer = null, tab = "log", running = false, runTimer = null, lastStamp = null;
 
 /* ---- 主题切换（浅色/深色，localStorage 记忆） ---- */
 function applyTheme(t){
@@ -332,9 +336,18 @@ function showTab(which){
   for (const b of $("tabs").querySelectorAll("button")) b.classList.remove("active");
   $({log:"tab-log",status:"tab-status",flags:"tab-flags",report:"tab-report"}[which]).classList.add("active");
   if (which==="log") pollLog();
-  if (which==="status") loadStatus();
+  if (which==="status") pollStatus();
   if (which==="flags") pollFlags();
   if (which==="report") loadReport(false);
+}
+
+/* ---- 看板轮询：3 秒刷新一次，看板页签打开期间保持最新 ---- */
+let statusTimer = null;
+async function pollStatus(){
+  clearTimeout(statusTimer);
+  if (!cur || tab !== "status") return;
+  await loadStatus();
+  statusTimer = setTimeout(pollStatus, 3000);
 }
 
 async function pollLog(){
@@ -345,10 +358,23 @@ async function pollLog(){
   const el = $("log");
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
   el.textContent = d.log || "（暂无输出）";
+  const stamps = (d.log || "").match(/\[\d{2}:\d{2}:\d{2}\]/g);
+  lastStamp = stamps ? stamps[stamps.length-1].slice(1,-1) : null;
   if (stick) el.scrollTop = el.scrollHeight;
   clearTimeout(timer);
   timer = setTimeout(pollLog, 1500);
 }
+/* 心跳：每秒根据最后一条日志的时间戳刷新"最近活动"指示 */
+setInterval(() => {
+  const el = $("heartbeat");
+  if (!cur || !running || !lastStamp){ el.textContent = ""; return; }
+  const p = lastStamp.split(":").map(Number);
+  const now = new Date();
+  let d = Math.floor((now - new Date(now.getFullYear(), now.getMonth(), now.getDate(), p[0], p[1], p[2]))/1000);
+  if (d < 0) d += 86400;
+  if (d > 180){ el.textContent = `⚠ ${Math.floor(d/60)}分${d%60}秒无输出`; el.style.color = "var(--yellow)"; }
+  else { el.textContent = `♥ 最近活动 ${d}s 前`; el.style.color = "var(--green)"; }
+}, 1000);
 
 async function loadStatus(){
   if (!cur) return;
@@ -363,21 +389,49 @@ async function loadStatus(){
       `${f.id||"?"} [${f.kind||"note"}] ${(f.title||f.description||"").slice(0,80)}`).join("\n");
     facts += "\n\n【任务 intents】\n" + I.slice(-25).map(i =>
       `${i.id||"?"} [${i.status||"open"}] ${(i.title||i.description||"").slice(0,80)}`).join("\n");
+    if (d.attachments && d.attachments.length)
+      facts += "\n\n【附件】\n" + d.attachments.map(a => `${a.name}（${fmtSize(a.size)}）`).join("\n") + "\n";
+    // 派单心跳：每次模型调用的开始/结束（新→旧），"进行中"即当前这一轮
+    const J = d.journal || [];
+    if (J.length){
+      const rows = [];
+      let pend = null;
+      for (let i = J.length - 1; i >= 0 && rows.length < 15; i--){
+        const e = J[i];
+        if (e.t === "end"){ if (!pend) pend = e; continue; }
+        if (e.t !== "start") continue;
+        const hm = (e.ts || "").slice(11, 19);
+        const mode = e.mode === "plan" ? "规划" : "执行";
+        if (pend){
+          const r = pend.rc === 0 ? "✓" : ("rc=" + pend.rc);
+          rows.push(`${hm}  ${mode} ${e.model||""} · ${pend.secs}s ${r}`);
+          pend = null;
+        } else {
+          const el = Math.max(0, Math.floor(Date.now()/1000 - Date.parse(e.ts)/1000));
+          rows.push(`${hm}  ${mode} ${e.model||""} · ⏳ 进行中 ${el}s…`);
+        }
+      }
+      if (rows.length) facts += "\n\n【派单心跳（新→旧）】\n" + rows.join("\n") + "\n";
+    }
   } catch(e){ facts = d.graph_raw || ""; }
-  if (d.attachments && d.attachments.length)
-    facts += "\n【附件】\n" + d.attachments.map(a => `${a.name}（${fmtSize(a.size)}）`).join("\n") + "\n";
   $("status-pre").textContent = facts + "\n\n── sapper status 原始输出 ──\n" + (d.status || "");
 }
 
 $("task-sel").onchange = onTaskChange;
 function onTaskChange(){
   cur = $("task-sel").value;
-  clearTimeout(timer); clearTimeout(flagTimer); clearTimeout(runTimer);
+  clearTimeout(timer); clearTimeout(flagTimer); clearTimeout(runTimer); clearTimeout(statusTimer);
+  lastStamp = null;
   if (!cur){ running = false; badge(false); updateRunControls();
              $("log").textContent = "选择或创建任务…";
              $("flag-banner").style.display = "none"; renderFlags([]); return; }
+  // 切任务后清掉上一任务的残留画面，并按当前页签拉取全部数据
+  $("log").textContent = "（暂无输出）";
+  $("status-pre").textContent = "加载中…";
   pollRun();
   if (tab==="log") pollLog();
+  if (tab==="status") pollStatus();
+  if (tab==="report") loadReport(false);
   pollFlags();
 }
 
@@ -412,7 +466,7 @@ async function pollRun(){
 
 /* ---- Flag 结果 ---- */
 let flagTimer = null, lastFlags = [];
-const ST_TEXT = {recorded:"已记录", submitted:"已提交 ✓", rejected:"提交被拒"};
+const ST_TEXT = {recorded:"已记录", submitted:"已提交 ✓", rejected:"提交被拒", suspected:"⚠ 疑似（未用 sapper flag 录入）"};
 
 async function pollFlags(){
   clearTimeout(flagTimer);
@@ -722,6 +776,21 @@ async function stopTask(){
 }
 $("btn-start").onclick = startTask;
 $("btn-run").onclick = () => running ? stopTask() : startTask();
+
+/* ---- 清场（赛场急救） ---- */
+$("btn-cleanup").onclick = async () => {
+  const msg = $("create-msg"); msg.className = "";
+  if (!confirm("清场将执行：\n① 停止所有运行中的任务\n② 杀掉所有未被本界面跟踪的 agent 进程（pi / tesseract / sapper / claude / sage 等）\n\n注意：其他终端里手动运行的同类程序也会被杀！\n\n确定执行？")) return;
+  msg.textContent = "清场中…";
+  const d = await api("/api/cleanup", {});
+  if (d.error){ msg.className = "err"; msg.textContent = "✗ " + d.error; return; }
+  const k = d.killed || [], s = d.stopped_tasks || [];
+  msg.className = "";
+  msg.textContent = "🧹 清场完成：停止任务 " + (s.length ? s.join("、") : "无")
+    + "，杀掉进程 " + k.length + " 个\n"
+    + (k.length ? k.map(x => "  - " + x.pid + ": " + x.cmd).join("\n") : "  （无残留进程）");
+  setTimeout(pollRun, 800);
+};
 
 /* ---- 编辑任务 ---- */
 async function openEdit(){
