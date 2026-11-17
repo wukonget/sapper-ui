@@ -213,6 +213,22 @@
       <div style="margin-top:8px"><button id="cfg-apply">加载配置</button></div>
       <div id="cfg-hint" style="margin-top:6px;font-size:11px;color:var(--dim)">
         选择文件后立即生效；手动输入需点「加载配置」。只影响之后启动的任务。</div>
+      <label style="margin-top:14px">模型接入（one-api 平台）——填完点接入，自动写 pi provider 与 env，免手改配置</label>
+      <div class="row">
+        <div><label>档位名</label>
+          <input type="text" id="mdl-name" placeholder="venue" style="width:90px"></div>
+        <div style="flex:1"><label>平台地址（带 /v1）</label>
+          <input type="text" id="mdl-url" placeholder="http://ip:3000/v1"></div>
+      </div>
+      <div class="row">
+        <div style="flex:1"><label>API Key</label>
+          <input type="password" id="mdl-key" placeholder="sk-..."></div>
+        <div><label>模型名</label>
+          <input type="text" id="mdl-model" placeholder="deepseek-flash"></div>
+      </div>
+      <div style="margin-top:8px"><button id="mdl-save">接入并设为当前模型</button></div>
+      <div id="mdl-hint" style="margin-top:6px;font-size:11px;color:var(--dim)">
+        接入 = 写入 pi provider（cc-switch 的 pi 配置）并把 SAPPER_MODEL 设为 档位名/模型名，立即生效于之后启动的任务。</div>
       <div id="cfg-info"></div>
     </details>
   </div>
@@ -685,6 +701,23 @@ async function applyConfig(){
   if (d.engine) $("cfg-engine").value = d.engine;
   renderCfg(d);
 }
+$("mdl-save").onclick = async () => {
+  const el = $("mdl-hint");
+  el.style.color = "var(--dim)";
+  el.textContent = "接入中…（写 pi provider + 更新 env + 冒烟自检）";
+  const d = await api("/api/model", {
+    name: $("mdl-name").value.trim(),
+    base_url: $("mdl-url").value.trim(),
+    api_key: $("mdl-key").value.trim(),
+    model: $("mdl-model").value.trim(),
+  });
+  if (d.error){ el.style.color = "var(--yellow)"; el.textContent = "✗ " + d.error; return; }
+  el.style.color = "var(--green, var(--fg))";
+  el.textContent = "✓ 已接入，当前模型: " + (d.model || "") +
+    "（之后启动的任务即用新档；建议跑一道迷你题冒烟）";
+  $("mdl-key").value = "";
+  renderCfg(d.config || {});
+};
 if (window.sapperUI && typeof window.sapperUI.pickEnvFile === "function"){
   $("cfg-pick").onclick = async () => {
     const p = await window.sapperUI.pickEnvFile();

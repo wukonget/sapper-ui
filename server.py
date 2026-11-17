@@ -436,16 +436,33 @@ def append_log(name: str, line: str) -> None:
 
 def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None,
                skip_permissions: bool, engine_override: str | None) -> None:
+    # UI 字段留空时回落到 sapper.env 预算（SAPPER_MINUTES_PER_CHALLENGE /
+    # SAPPER_MAX_STEPS），而不是无限步数——2026-11-17 比赛前防失控。
+    if not minutes:
+        try:
+            minutes = int(os.environ.get("SAPPER_MINUTES_PER_CHALLENGE", "") or 0) or None
+        except ValueError:
+            minutes = None
+    if max_steps is None:
+        try:
+            max_steps = int(os.environ.get("SAPPER_MAX_STEPS", "") or 0) or None
+        except ValueError:
+            max_steps = None
     # 不传 --minutes = 无时间上限；max-steps 不支持 0，用大值表示不限
     steps = max_steps or UNLIMITED_STEPS
     args = ["auto"]
     if minutes:
         args += ["--minutes", str(minutes)]
     args += ["--max-steps", str(steps), "--max-explore", str(steps)]
+    args.append("--verify")  # 士兵结论必须核查（2026-11-17：UI 启动也强制开）
     if skip_permissions:
         args.append("--skip-permissions")
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"  # sapper 是 python：管道输出改行缓冲，日志才能实时滚动
+    # 本机引擎(sapper-pi-engine 等)装在 ~/.local/bin，桌面会话 PATH 可能缺它
+    local_bin = str(Path.home() / ".local" / "bin")
+    if local_bin and local_bin not in env.get("PATH", "").split(":"):
+        env["PATH"] = env.get("PATH", "") + os.pathsep + local_bin
     docker_mode = DEPLOY["mode"] == "docker"
     if docker_mode:
         ok, msg = ensure_container(tdir, name)
@@ -686,6 +703,46 @@ def deploy_info() -> dict:
         "image_ok": image_ok(DEPLOY["image"]) if DEPLOY["mode"] == "docker" else None,
         "settings_file": str(SETTINGS_FILE),
     }
+
+
+def upsert_model_profile(name: str, base_url: str, api_key: str, model: str) -> None:
+    """页面上接入一个模型档：写 pi provider（cc-switch 的 pi 配置）+ 更新
+    sapper.env 的 SAPPER_MODEL（provider 限定形式）+ 热更新本进程环境。
+    之后的 auto 子进程即用新档，无需重启 UI。"""
+    # ① pi provider（~/.pi/agent/models.json，key 内嵌 provider）
+    mp = Path.home() / ".pi" / "agent" / "models.json"
+    data = json.loads(mp.read_text(encoding="utf-8"))
+    providers = data.setdefault("providers", {})
+    old = providers.get(name, {})
+    models = old.get("models", [])
+    for m in models:
+        if isinstance(m, dict) and m.get("id") == model:
+            break
+    else:
+        models = [{"id": model, "name": model, "reasoning": True,
+                   "input": ["text"], "contextWindow": 128000, "maxTokens": 32768}]
+    providers[name] = {"name": name, "baseUrl": base_url, "api": "openai-completions",
+                       "apiKey": api_key, "models": models}
+    mp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # ② sapper.env 的 SAPPER_MODEL 行（provider 限定形式）
+    qualified = f"{name}/{model}"
+    env_path = Path(CURRENT_ENV_FILE) if CURRENT_ENV_FILE else Path.home() / "ctf" / "sapper.env"
+    line = f"export SAPPER_MODEL={qualified}"
+    if env_path.is_file():
+        text = env_path.read_text(encoding="utf-8")
+        if re.search(r"^export SAPPER_MODEL=.*$", text, flags=re.M):
+            text = re.sub(r"^export SAPPER_MODEL=.*$", lambda _: line, text, flags=re.M)
+        else:
+            text = text.rstrip("\n") + "\n" + line + "\n"
+        env_path.write_text(text, encoding="utf-8")
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+    # ③ 本进程热生效：之后 start_auto 的 os.environ.copy() 即携带新档
+    os.environ["SAPPER_MODEL"] = qualified
+    os.environ.pop("SAPPER_PI_PROVIDER", None)
 
 
 def _config_info() -> dict:
@@ -1246,6 +1303,25 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         CURRENT_ENV_FILE = ""
                 return self._json(_config_info())
+            except Exception as exc:
+                return self._json({"error": str(exc)}, 500)
+
+        if path == "/api/model":
+            # 页面接入模型档（one-api 等）：写 pi provider + 更新 sapper.env
+            # 的 SAPPER_MODEL（provider 限定形式）+ 本进程热生效，免手改配置。
+            try:
+                b = self._body()
+                name = re.sub(r"[^a-z0-9_-]", "", str(b.get("name") or "").lower())
+                base_url = str(b.get("base_url") or "").strip()
+                api_key = str(b.get("api_key") or "").strip()
+                model = str(b.get("model") or "").strip()
+                if not (name and base_url and api_key and model):
+                    return self._json({"error": "档位名/平台地址/API Key/模型名 全部必填"}, 400)
+                if not re.match(r"^https?://", base_url):
+                    return self._json({"error": "平台地址须以 http:// 或 https:// 开头（one-api 一般带 /v1）"}, 400)
+                upsert_model_profile(name, base_url, api_key, model)
+                return self._json({"ok": True, "model": os.environ.get("SAPPER_MODEL", ""),
+                                   "config": _config_info()})
             except Exception as exc:
                 return self._json({"error": str(exc)}, 500)
 
