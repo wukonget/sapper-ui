@@ -430,9 +430,18 @@ def run_sapper(tdir: Path, args: list[str], timeout: int = 120,
 
 def append_log(name: str, line: str) -> None:
     stamped = f"[{time.strftime('%H:%M:%S')}] {line}"
+    tdir = None
     with LOCK:
-        RUNNING.setdefault(name, {"proc": None, "log": deque(maxlen=4000), "lock": threading.Lock()})
-        RUNNING[name]["log"].append(stamped)
+        entry = RUNNING.setdefault(name, {"proc": None, "log": deque(maxlen=4000), "lock": threading.Lock()})
+        entry["log"].append(stamped)
+        tdir = entry.get("tdir")
+    if tdir:
+        # 落盘:服务重启后内存日志清零,任务目录留一份可查(2026-11-18)
+        try:
+            with open(Path(tdir) / ".sapper" / "auto-ui.log", "a", encoding="utf-8") as f:
+                f.write(stamped + "\n")
+        except OSError:
+            pass
 
 
 def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None,
@@ -491,6 +500,13 @@ def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None
         finally:
             code = proc.wait()
             append_log(name, f"[ui] auto 进程退出 (exit={code})")
+            # 扫尾:核心 SAPPER_TIMEOUT 杀引擎调用时只杀直接子进程,组内可能
+            # 残留 pi 等孙进程——auto 退出后对整组补一刀(2026-11-18)
+            if IS_POSIX:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)  # start_new_session → pgid==pid
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             with LOCK:
                 entry = RUNNING.get(name)
                 if entry:
@@ -501,6 +517,7 @@ def start_auto(name: str, tdir: Path, minutes: int | None, max_steps: int | None
         entry = RUNNING.setdefault(name, {"proc": None, "log": deque(maxlen=4000), "lock": threading.Lock()})
         if entry["proc"] and entry["proc"].poll() is None:
             raise RuntimeError("该任务已在运行中")
+        entry["tdir"] = str(tdir)  # append_log 落盘用
         proc = subprocess.Popen(
             sapper_argv(tdir, name, args),
             cwd=str(tdir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1665,10 +1682,24 @@ def main():
     httpd.tasks_root = tasks_root
     print(f"[sapper-ui] http://127.0.0.1:{args.port}   任务目录: {tasks_root}")
     print("[sapper-ui] 仅限授权目标使用。Ctrl+C 退出（运行中的 auto 会一并终止）。")
+    def _on_sigterm(_s, _f):
+        raise SystemExit(1)  # 转 SystemExit,让下面的 finally 兜底有机会跑
+
+    if IS_POSIX:
+        signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         httpd.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\n[sapper-ui] bye")
+    finally:
+        # 退出兜底:终止所有运行中的 auto(整组,含 pi 等孙进程)
+        with LOCK:
+            procs = [e.get("proc") for e in RUNNING.values()
+                     if e.get("proc") and e["proc"].poll() is None]
+        for p in procs:
+            kill_tree(p, force=True)
+        if procs:
+            print(f"[sapper-ui] 已终止 {len(procs)} 个运行中的 auto")
 
 
 if __name__ == "__main__":
